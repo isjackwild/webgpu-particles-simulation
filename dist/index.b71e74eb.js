@@ -522,24 +522,31 @@ function hmrAcceptRun(bundle, id) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
 var _computeShaderWgsl = require("bundle-text:./compute-shader.wgsl");
 var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl);
+var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
+var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
 var _glMatrix = require("gl-matrix");
 /// <reference types="@webgpu/types" />
 console.log("Hello world!");
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
 // you have to pad a vec3 because of alignment
+const VERTEX_COUNT = 6;
 const ENTITIES_COUNT = 200;
 const STRIDE = 8; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
+const canvas = document.querySelector("canvas");
+let ctx;
+let presentationFormat;
 let device;
-let inputBuffer, outputBuffer, gpuReadBuffer;
+let inputBuffer, outputBuffer, gpuReadBuffer, vertexDataBuffer;
 let bindGroupLayout, bindGroup;
 let shaderModule, computePipeline;
+let renderPipeline;
+let renderPassDesc;
 let renderables = [];
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for(let entity = 0; entity < ENTITIES_COUNT; entity++){
     const position = _glMatrix.vec3.fromValues(Math.random() * window.innerWidth, Math.random() * window.innerHeight, 0);
-    const power = _glMatrix.vec3.scale(_glMatrix.vec3.create(), _glMatrix.vec3.normalize(_glMatrix.vec3.create(), _glMatrix.vec3.fromValues(Math.random() - 0.5, Math.random() - 0.5, 0)), 0.1);
     entityData[entity * STRIDE + 0] = position[0]; // position.x
     entityData[entity * STRIDE + 1] = position[1]; // position.y
     entityData[entity * STRIDE + 2] = position[2]; // position.z
@@ -548,7 +555,17 @@ for(let entity = 0; entity < ENTITIES_COUNT; entity++){
     entityData[entity * STRIDE + 6] = 0; // velocity.z
     entityData[entity * STRIDE + 7] = 0.5 + Math.random(); // mass
 }
-const setupRenderer = ()=>{
+const setupCanvasCtx = ()=>{
+    ctx = canvas.getContext("webgpu");
+    presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+    ctx.configure({
+        device,
+        format: presentationFormat,
+        alphaMode: "opaque",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+};
+const setupDOMRenderer = ()=>{
     for(let i = 0; i < ENTITIES_COUNT; i++){
         const div = document.createElement("div");
         div.innerHTML = `💩`;
@@ -583,6 +600,39 @@ const createBuffers = ()=>{
         size: BUFFER_SIZE,
         usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
     });
+    vertexDataBuffer = device.createBuffer({
+        size: VERTEX_COUNT * 4 * Float32Array.BYTES_PER_ELEMENT,
+        usage: GPUBufferUsage.VERTEX,
+        mappedAtCreation: true
+    });
+    // prettier-ignore
+    new Float32Array(vertexDataBuffer.getMappedRange()).set([
+        1,
+        1,
+        1,
+        0,
+        1,
+        -1,
+        1,
+        1,
+        -1,
+        -1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        -1,
+        -1,
+        0,
+        1,
+        -1,
+        1,
+        0,
+        0, 
+    ]);
+    vertexDataBuffer.unmap();
 };
 const createBindGroups = ()=>{
     // A bind group layout defines the input/output interface expected by a shader
@@ -639,7 +689,7 @@ const createComputePipeline = ()=>{
         }
     });
 };
-const createCommands = ()=>{
+const createComputeCommands = ()=>{
     const commandEncoder = device.createCommandEncoder();
     const computePass = commandEncoder.beginComputePass();
     computePass.setPipeline(computePipeline);
@@ -653,7 +703,7 @@ const compute = async ()=>{
     performance.mark("compute.start");
     device.queue.writeBuffer(inputBuffer, 0, entityData);
     device.queue.submit([
-        createCommands()
+        createComputeCommands()
     ]);
     // Read buffer.
     await gpuReadBuffer.mapAsync(GPUMapMode.READ, 0, BUFFER_SIZE);
@@ -670,7 +720,93 @@ const compute = async ()=>{
     performance.clearMeasures();
     requestAnimationFrame(compute);
 };
-const render = ()=>{
+const createRenderPipeline = async ()=>{
+    // Setup shader modules
+    const shaderModule1 = device.createShaderModule({
+        code: _drawShaderWgslDefault.default
+    });
+    await shaderModule1.compilationInfo();
+    const vertexState = {
+        module: shaderModule1,
+        entryPoint: "vertex_main",
+        buffers: [
+            {
+                arrayStride: 16,
+                attributes: [
+                    {
+                        format: "float32x2",
+                        offset: 0,
+                        shaderLocation: 0
+                    },
+                    {
+                        format: "float32x2",
+                        offset: 8,
+                        shaderLocation: 1
+                    }, 
+                ]
+            }, 
+        ]
+    };
+    const fragmentState = {
+        module: shaderModule1,
+        entryPoint: "fragment_main",
+        targets: [
+            {
+                format: presentationFormat
+            }
+        ]
+    };
+    const depthFormat = "depth24plus-stencil8";
+    const depthTexture = device.createTexture({
+        size: {
+            width: canvas.width,
+            height: canvas.height,
+            depthOrArrayLayers: 1
+        },
+        format: depthFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    const bindGroupLayout = device.createBindGroupLayout({
+        entries: []
+    });
+    const layout = device.createPipelineLayout({
+        bindGroupLayouts: []
+    });
+    renderPipeline = device.createRenderPipeline({
+        layout,
+        vertex: vertexState,
+        fragment: fragmentState,
+        depthStencil: {
+            format: depthFormat,
+            depthWriteEnabled: true,
+            depthCompare: "less"
+        }
+    });
+    renderPassDesc = {
+        colorAttachments: [
+            {
+                view: undefined,
+                clearValue: {
+                    r: 0.5,
+                    g: 0.5,
+                    b: 0.5,
+                    a: 1
+                },
+                loadOp: "clear",
+                storeOp: "store"
+            }, 
+        ],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthClearValue: 1,
+            depthLoadOp: "clear",
+            depthStoreOp: "store",
+            stencilLoadOp: "clear",
+            stencilStoreOp: "store"
+        }
+    };
+};
+const renderDOM = ()=>{
     for(let entity1 = 0; entity1 < ENTITIES_COUNT; entity1++){
         const x = entityData[entity1 * STRIDE + 0]; // position.x
         const y = entityData[entity1 * STRIDE + 1]; // position.y
@@ -678,6 +814,19 @@ const render = ()=>{
         const transform = `translate3d(${x}px, ${y}px, ${z}px)`;
         renderables[entity1].style.transform = transform;
     }
+    requestAnimationFrame(renderDOM);
+};
+const render = ()=>{
+    renderPassDesc.colorAttachments[0].view = ctx.getCurrentTexture().createView();
+    const commandEncoder = device.createCommandEncoder();
+    const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
+    renderPass.setPipeline(renderPipeline);
+    renderPass.setVertexBuffer(0, vertexDataBuffer);
+    renderPass.draw(VERTEX_COUNT, 1, 0, 0);
+    renderPass.end();
+    device.queue.submit([
+        commandEncoder.finish()
+    ]);
     requestAnimationFrame(render);
 };
 (async ()=>{
@@ -685,17 +834,19 @@ const render = ()=>{
         alert("WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags.");
         return;
     }
-    setupRenderer();
+    setupDOMRenderer();
     await requestWebGPU();
+    setupCanvasCtx();
     createBuffers();
     createBindGroups();
     createComputePipeline();
-    createCommands();
+    await createRenderPipeline();
     requestAnimationFrame(compute);
+    requestAnimationFrame(renderDOM);
     requestAnimationFrame(render);
 })();
 
-},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","gl-matrix":"1mBhM"}],"gkKU3":[function(require,module,exports) {
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","gl-matrix":"1mBhM","bundle-text:./draw-shader.wgsl":"l4wa9"}],"gkKU3":[function(require,module,exports) {
 exports.interopDefault = function(a) {
     return a && a.__esModule ? a : {
         default: a
@@ -7100,6 +7251,9 @@ var forEach = function() {
     };
 }();
 
-},{"./common.js":"lYeTq","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
+},{"./common.js":"lYeTq","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"l4wa9":[function(require,module,exports) {
+module.exports = "struct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) uv : vec2<f32>,\n}\n\n@vertex\nfn vertex_main(vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  output.position = vec4<f32>(vert.position.xy, 0.0, 1.0);\n  output.uv = vert.uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n  return vec4<f32>(in.uv, 0.0, 1.0);\n}";
+
+},{}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
 
 //# sourceMappingURL=index.b71e74eb.js.map
