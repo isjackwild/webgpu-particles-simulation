@@ -20,31 +20,29 @@ fn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {
   return dst;
 }
 
+fn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {
+  var resolution = vec2<f32>(1512, 865);
+  var clip_space = ((screen_space / resolution) * 2.0) - 1.0;
+  clip_space.y = clip_space.y * -1;
+
+  return clip_space;
+}
+
 @vertex
-fn vertex_main(vert : VertexInput) -> VertexOutput {
+fn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {
   var output : VertexOutput;
-  output.position = vec4<f32>(vert.position.xy, 0.0, 1.0);
-  output.uv = vert.uv;
+  var radius : f32 = 1;
+  var entity = input[instance_index];
+
+
+  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;
+
+  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0.0, 1.0);
+  // output.uv = vert.uv;
   return output;
 }
 
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
-  let bodies_count = arrayLength(&input);
-
-  let coords: vec2<f32> = in.uv * vec2<f32>(1512, 865);
-
-  var color = vec3<f32>(0);
-  // color = color + ball_sdf(vec2<f32>(100, 100), 8, coords).rgb;
-
-  for (var i: u32 = 0; i < bodies_count; i = i + 1) {
-    var entity = input[i];
-    var sdf = ball_sdf(entity.position.xy, 8, coords);
-
-    var a = step(1.0, sdf);
-    
-    color = color + a;
-  }
-
-  return vec4<f32>(color, 1.0);
+  return vec4<f32>(1.0);
 }

@@ -30,10 +30,10 @@ fn check_colissions(dst : ptr<function, Body>) {
   (*dst).velocity = (*dst).velocity;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
   const PI: f32 = 3.14159;
-  let radius: f32 = 8;
+  let radius: f32 =2;
   let gravity = vec3<f32>(0, 1, 0);
   let wind = vec3<f32>(0.0, 0, 0);
 
@@ -50,34 +50,34 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
   (*next_state) = prev_state;
 
 
-  for (var i: u32 = 0; i < bodies_count; i = i + 1) {
-    if (i == body_index) {
-      continue;
-    }
+  // for (var i: u32 = 0; i < bodies_count; i = i + 1) {
+  //   if (i == body_index) {
+  //     continue;
+  //   }
 
-    var other_entity = input[i];
-    var position_to_position = (*next_state).position - other_entity.position;
-    var dist = length(position_to_position);
+  //   var other_entity = input[i];
+  //   var position_to_position = (*next_state).position - other_entity.position;
+  //   var dist = length(position_to_position);
 
-    if (dist > radius * 2) {
-      continue;
-    }
+  //   if (dist > radius * 2) {
+  //     continue;
+  //   }
 
-    let overlap = radius * 2 - dist;
-    (*next_state).position = (*next_state).position + normalize(position_to_position) * overlap * 0.5;
+  //   let overlap = radius * 2 - dist;
+  //   (*next_state).position = (*next_state).position + normalize(position_to_position) * overlap * 0.5;
 
 
-    // some pretty dodgy maths here i think...
-    let incidental_velocity = other_entity.velocity;
-    if (length(incidental_velocity) == 0 || length((*next_state).velocity) == 0) {
-      continue;
-    }
-    let incidental_dir = normalize(incidental_velocity);
-    let entity_dir = normalize((*next_state).velocity);
-    let half = normalize(incidental_dir + entity_dir);
-    let incidental_normal = cross(half, vec3<f32>(0, 0, 1));
-    (*next_state).velocity = reflect((*next_state).velocity,  incidental_normal);
-  }
+  //   // // some pretty dodgy maths here i think...
+  //   let incidental_velocity = other_entity.velocity;
+  //   if (length(incidental_velocity) == 0 || length((*next_state).velocity) == 0) {
+  //     continue;
+  //   }
+  //   let incidental_dir = normalize(incidental_velocity);
+  //   let entity_dir = normalize((*next_state).velocity);
+  //   let half = normalize(incidental_dir + entity_dir);
+  //   let incidental_normal = cross(half, vec3<f32>(0, 0, 1));
+  //   (*next_state).velocity = reflect((*next_state).velocity,  incidental_normal);
+  // }
   
   var acceleration = vec3<f32>(0);
   var weight : vec3<f32> = gravity * (*next_state).mass;

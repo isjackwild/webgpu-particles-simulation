@@ -10,9 +10,12 @@ import { vec3 } from "gl-matrix";
 
 // you have to pad a vec3 because of alignment
 const VERTEX_COUNT = 6;
-const ENTITIES_COUNT = 200;
+const ENTITIES_COUNT = 100_000;
+// const ENTITIES_COUNT = 2_000_000;
 const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
+
+console.log(BUFFER_SIZE);
 
 const canvas = document.querySelector("canvas") as HTMLCanvasElement;
 canvas.width = window.innerWidth;
@@ -21,15 +24,15 @@ let ctx: GPUCanvasContext;
 let presentationFormat;
 
 let device: GPUDevice;
-let bufferA, bufferB, gpuReadBuffer, vertexDataBuffer;
+let bufferA, bufferB, vertexDataBuffer;
 
-let bindGroupLayout, bindGroupPing, bindGroupPong;
+let bindGroupLayout, bindGroupA, bindGroupB;
 let shaderModule, computePipeline;
 
 let renderPipeline;
 let renderPassDesc: GPURenderPassDescriptor;
 
-let renderables: HTMLElement[] = [];
+let loops = 0;
 
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
@@ -62,18 +65,6 @@ const setupCanvasCtx = () => {
   });
 };
 
-const setupDOMRenderer = () => {
-  for (let i = 0; i < ENTITIES_COUNT; i++) {
-    const div = document.createElement("div");
-    div.innerHTML = `💩`;
-    div.style.position = "fixed";
-    div.style.top = "-1ch";
-    div.style.left = "-1ch";
-    renderables.push(div);
-  }
-  document.body.append(...renderables);
-};
-
 const requestWebGPU = async () => {
   if (device) return device;
 
@@ -87,20 +78,17 @@ const requestWebGPU = async () => {
 };
 
 const createBuffers = () => {
-  // we don't need it mapped or filled because we do this at the start of each compute loop;
   bufferA = device.createBuffer({
     size: BUFFER_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, // DST because we copy the result back into this after computation
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
   });
+  new Float32Array(bufferA.getMappedRange()).set([...entityData]);
+  bufferA.unmap();
 
   bufferB = device.createBuffer({
     size: BUFFER_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, // SRC because we copy from this into the gpu read staging buffer
-  });
-
-  gpuReadBuffer = device.createBuffer({
-    size: BUFFER_SIZE,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
   vertexDataBuffer = device.createBuffer({
@@ -129,7 +117,10 @@ const createBindGroups = () => {
     entries: [
       {
         binding: 0,
-        visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
+        visibility:
+          GPUShaderStage.COMPUTE |
+          GPUShaderStage.FRAGMENT |
+          GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
       {
@@ -141,7 +132,7 @@ const createBindGroups = () => {
   });
 
   // A bind group represents the actual input/output data for a shader.
-  bindGroupPing = device.createBindGroup({
+  bindGroupA = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: bufferA } },
@@ -149,11 +140,11 @@ const createBindGroups = () => {
     ],
   });
 
-  bindGroupPong = device.createBindGroup({
+  bindGroupB = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: bufferA } },
-      { binding: 1, resource: { buffer: bufferB } },
+      { binding: 0, resource: { buffer: bufferB } },
+      { binding: 1, resource: { buffer: bufferA } },
     ],
   });
 };
@@ -174,42 +165,31 @@ const createComputePipeline = () => {
   });
 };
 
-const createComputeCommands = () => {
+const createComputeCommands = (bindGroup) => {
   const commandEncoder = device.createCommandEncoder();
   const computePass = commandEncoder.beginComputePass();
   computePass.setPipeline(computePipeline);
-  computePass.setBindGroup(0, bindGroupPing);
+  computePass.setBindGroup(0, bindGroup);
 
-  computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 256));
+  computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 64));
   computePass.end();
-
-  commandEncoder.copyBufferToBuffer(bufferB, 0, gpuReadBuffer, 0, BUFFER_SIZE);
 
   return commandEncoder.finish();
 };
 
-const compute = async () => {
+const compute = () => {
   performance.mark("compute.start");
-  device.queue.writeBuffer(bufferA, 0, entityData);
 
-  device.queue.submit([createComputeCommands()]);
-
-  // Read buffer.
-  await gpuReadBuffer.mapAsync(GPUMapMode.READ, 0, BUFFER_SIZE);
-  const arrayBuffer = gpuReadBuffer.getMappedRange(0, BUFFER_SIZE).slice();
-  const outputData = new Float32Array(arrayBuffer);
-  gpuReadBuffer.unmap();
-  entityData = outputData;
+  device.queue.submit([
+    createComputeCommands(loops % 2 === 0 ? bindGroupA : bindGroupB),
+  ]);
 
   performance.mark("compute.end");
   // console.log(
+  //   "COMPUTE",
   //   performance.measure("compute.duration", "compute.start", "compute.end")
   //     .duration
   // );
-  performance.clearMarks();
-  performance.clearMeasures();
-
-  requestAnimationFrame(compute);
 };
 
 const createRenderPipeline = async () => {
@@ -290,21 +270,8 @@ const createRenderPipeline = async () => {
   };
 };
 
-const renderDOM = () => {
-  for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
-    const x = entityData[entity * STRIDE + 0]; // position.x
-    const y = entityData[entity * STRIDE + 1]; // position.y
-    const z = entityData[entity * STRIDE + 2]; // position.z
-
-    const transform = `translate3d(${x}px, ${y}px, ${z}px)`;
-
-    renderables[entity].style.transform = transform;
-  }
-
-  requestAnimationFrame(renderDOM);
-};
-
 const render = () => {
+  performance.mark("render.start");
   renderPassDesc.colorAttachments[0].view = ctx
     .getCurrentTexture()
     .createView();
@@ -313,13 +280,27 @@ const render = () => {
   const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
 
   renderPass.setPipeline(renderPipeline);
-  renderPass.setBindGroup(0, bindGroupPing);
+  renderPass.setBindGroup(0, loops % 2 === 0 ? bindGroupB : bindGroupA);
   renderPass.setVertexBuffer(0, vertexDataBuffer);
-  renderPass.draw(VERTEX_COUNT, 1, 0, 0);
+  renderPass.draw(VERTEX_COUNT, ENTITIES_COUNT, 0, 0);
   renderPass.end();
 
   device.queue.submit([commandEncoder.finish()]);
-  requestAnimationFrame(render);
+  performance.mark("render.end");
+  // console.log(
+  //   "RENDER",
+  //   performance.measure("render.duration", "render.start", "render.end")
+  //     .duration
+  // );
+};
+
+const animate = () => {
+  compute();
+  render();
+  loops++;
+  performance.clearMarks();
+  performance.clearMeasures();
+  requestAnimationFrame(animate);
 };
 
 (async () => {
@@ -337,7 +318,6 @@ const render = () => {
   createBindGroups();
   createComputePipeline();
   await createRenderPipeline();
-  requestAnimationFrame(compute);
-  // requestAnimationFrame(renderDOM);
-  requestAnimationFrame(render);
+
+  requestAnimationFrame(animate);
 })();
