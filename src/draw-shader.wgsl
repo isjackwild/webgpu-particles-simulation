@@ -3,7 +3,14 @@ struct Body {
   velocity: vec3<f32>,
   mass: f32,
 }
+
+struct Uniforms {
+  u_resolution : vec2<f32>,
+  u_mouse : vec2<f32>,
+}
+
 @group(0) @binding(0) var<storage, read> input : array<Body>;
+@group(0) @binding(2) var<uniform> uniforms : Uniforms;
 
 struct VertexInput {
   @location(0) position : vec2<f32>,
@@ -21,8 +28,7 @@ fn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {
 }
 
 fn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {
-  var resolution = vec2<f32>(1512, 865);
-  var clip_space = ((screen_space / resolution) * 2.0) - 1.0;
+  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;
   clip_space.y = clip_space.y * -1;
 
   return clip_space;

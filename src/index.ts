@@ -10,12 +10,10 @@ import { vec3 } from "gl-matrix";
 
 // you have to pad a vec3 because of alignment
 const VERTEX_COUNT = 6;
-const ENTITIES_COUNT = 100_000;
+const ENTITIES_COUNT = 500_000;
 // const ENTITIES_COUNT = 2_000_000;
 const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
-
-console.log(BUFFER_SIZE);
 
 const canvas = document.querySelector("canvas") as HTMLCanvasElement;
 canvas.width = window.innerWidth;
@@ -27,12 +25,15 @@ let device: GPUDevice;
 let bufferA, bufferB, vertexDataBuffer;
 
 let bindGroupLayout, bindGroupA, bindGroupB;
-let shaderModule, computePipeline;
+let uniformBuffer, uniformBindGroup;
 
+let shaderModule, computePipeline;
 let renderPipeline;
 let renderPassDesc: GPURenderPassDescriptor;
 
 let loops = 0;
+
+const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
@@ -42,13 +43,21 @@ for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
     0
   );
 
+  const velocity = vec3.fromValues(
+    Math.random() * 2 - 1,
+    Math.random() * 2 - 1,
+    0
+  );
+  vec3.normalize(velocity, velocity);
+  vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
+
   entityData[entity * STRIDE + 0] = position[0]; // position.x
   entityData[entity * STRIDE + 1] = position[1]; // position.y
   entityData[entity * STRIDE + 2] = position[2]; // position.z
 
-  entityData[entity * STRIDE + 4] = 0; // velocity.x
-  entityData[entity * STRIDE + 5] = 0; // velocity.y
-  entityData[entity * STRIDE + 6] = 0; // velocity.z
+  entityData[entity * STRIDE + 4] = velocity[0]; // velocity.x
+  entityData[entity * STRIDE + 5] = velocity[1]; // velocity.y
+  entityData[entity * STRIDE + 6] = velocity[2]; // velocity.z
 
   entityData[entity * STRIDE + 7] = 0.5 + Math.random(); // mass
 }
@@ -109,6 +118,15 @@ const createBuffers = () => {
   ]);
 
   vertexDataBuffer.unmap();
+
+  const uniformBufferSize =
+    1 * 2 * Float32Array.BYTES_PER_ELEMENT +
+    1 * 2 * Float32Array.BYTES_PER_ELEMENT; // resolution, mouse
+
+  uniformBuffer = device.createBuffer({
+    size: uniformBufferSize,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
 };
 
 const createBindGroups = () => {
@@ -128,6 +146,14 @@ const createBindGroups = () => {
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: "storage" },
       },
+      {
+        binding: 2,
+        visibility:
+          GPUShaderStage.VERTEX |
+          GPUShaderStage.FRAGMENT |
+          GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
     ],
   });
 
@@ -137,6 +163,12 @@ const createBindGroups = () => {
     entries: [
       { binding: 0, resource: { buffer: bufferA } },
       { binding: 1, resource: { buffer: bufferB } },
+      {
+        binding: 2,
+        resource: {
+          buffer: uniformBuffer,
+        },
+      },
     ],
   });
 
@@ -145,6 +177,12 @@ const createBindGroups = () => {
     entries: [
       { binding: 0, resource: { buffer: bufferB } },
       { binding: 1, resource: { buffer: bufferA } },
+      {
+        binding: 2,
+        resource: {
+          buffer: uniformBuffer,
+        },
+      },
     ],
   });
 };
@@ -295,6 +333,14 @@ const render = () => {
 };
 
 const animate = () => {
+  const uniformsArray = new Float32Array([
+    window.innerWidth,
+    window.innerHeight,
+    mouse.x,
+    mouse.y,
+  ]);
+  device.queue.writeBuffer(uniformBuffer, 0, uniformsArray);
+
   compute();
   render();
   loops++;
@@ -320,4 +366,8 @@ const animate = () => {
   await createRenderPipeline();
 
   requestAnimationFrame(animate);
+  window.addEventListener("mousemove", ({ clientX, clientY }) => {
+    mouse.x = clientX;
+    mouse.y = clientY;
+  });
 })();

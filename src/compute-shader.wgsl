@@ -4,8 +4,14 @@ struct Body {
   mass: f32,
 }
 
+struct Uniforms {
+  u_resolution : vec2<f32>,
+  u_mouse : vec2<f32>,
+}
+
 @group(0) @binding(0) var<storage, read> input : array<Body>;
 @group(0) @binding(1) var<storage, read_write> output : array<Body>;
+@group(0) @binding(2) var<uniform> uniforms : Uniforms;
 
 
 fn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {
@@ -33,9 +39,11 @@ fn check_colissions(dst : ptr<function, Body>) {
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
   const PI: f32 = 3.14159;
-  let radius: f32 =2;
-  let gravity = vec3<f32>(0, 1, 0);
-  let wind = vec3<f32>(0.0, 0, 0);
+
+  let radius: f32 = 1;
+  let mouse_radius: f32 = 200;
+  let gravity = vec3<f32>(0, 0, 0);
+  let wind = vec3<f32>(0, 0, 0);
 
   let bodies_count = arrayLength(&output);
   let body_index = global_id.x * (global_id.y + 1) * (global_id.z + 1);
@@ -49,43 +57,39 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
 
   (*next_state) = prev_state;
 
-
-  // for (var i: u32 = 0; i < bodies_count; i = i + 1) {
-  //   if (i == body_index) {
-  //     continue;
-  //   }
-
-  //   var other_entity = input[i];
-  //   var position_to_position = (*next_state).position - other_entity.position;
-  //   var dist = length(position_to_position);
-
-  //   if (dist > radius * 2) {
-  //     continue;
-  //   }
-
-  //   let overlap = radius * 2 - dist;
-  //   (*next_state).position = (*next_state).position + normalize(position_to_position) * overlap * 0.5;
-
-
-  //   // // some pretty dodgy maths here i think...
-  //   let incidental_velocity = other_entity.velocity;
-  //   if (length(incidental_velocity) == 0 || length((*next_state).velocity) == 0) {
-  //     continue;
-  //   }
-  //   let incidental_dir = normalize(incidental_velocity);
-  //   let entity_dir = normalize((*next_state).velocity);
-  //   let half = normalize(incidental_dir + entity_dir);
-  //   let incidental_normal = cross(half, vec3<f32>(0, 0, 1));
-  //   (*next_state).velocity = reflect((*next_state).velocity,  incidental_normal);
-  // }
-  
   var acceleration = vec3<f32>(0);
+
+
+  // var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);
+  // var dist = length(position_to_mouse);
+  // if (dist < radius + mouse_radius) {
+  //   let overlap = radius + mouse_radius - dist;
+  //   (*next_state).position = (*next_state).position + normalize(position_to_mouse) * overlap;
+
+  //   var incidence = normalize(position_to_mouse);
+  //   var normal = cross(incidence, vec3<f32>(0, 0, 1));
+  //   (*next_state).velocity = reflect((*next_state).velocity,  normal) * 1.2;
+  // }
+
+  var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);
+  var dist = length(position_to_mouse);
+  if (dist < mouse_radius) {
+    var repel_direction = normalize(position_to_mouse);
+    var repel_force = 1 - dist / mouse_radius;
+    repel_force = repel_force * repel_force;
+
+    acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);
+
+  }
+
+
+  
   var weight : vec3<f32> = gravity * (*next_state).mass;
   acceleration = apply_force((*next_state), acceleration, wind);
   acceleration = apply_force((*next_state), acceleration, weight);
 
   
-  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.1);
+  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.01);
   acceleration = apply_force((*next_state), acceleration, drag);
 
   (*next_state).velocity = (*next_state).velocity + acceleration;
@@ -99,14 +103,14 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
   }
 
   // BOTTOM
-  if ((*next_state).position.y > 800) {
-    (*next_state).position.y = 800;
+  if ((*next_state).position.y > uniforms.u_resolution.y) {
+    (*next_state).position.y = uniforms.u_resolution.y;
     (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));
   }
 
   // LEFT
-  if ((*next_state).position.x > 1500) {
-    (*next_state).position.x = 1500;
+  if ((*next_state).position.x > uniforms.u_resolution.x) {
+    (*next_state).position.x = uniforms.u_resolution.x;
     (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(-1, 0, 0));
   }
 
