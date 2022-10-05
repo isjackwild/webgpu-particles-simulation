@@ -11,6 +11,7 @@
     "parcel": "^2.3.2"
   },
   "dependencies": {
-    "@webgpu/types": "^0.1.21"
+    "@webgpu/types": "^0.1.21",
+    "gl-matrix": "^3.4.3"
   }
 }

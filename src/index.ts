@@ -1,12 +1,15 @@
+/// <reference types="@webgpu/types" />
+
 console.log("Hello world!");
 import computeShader from "bundle-text:./compute-shader.wgsl";
+import { vec3 } from "gl-matrix";
 
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
 
 // you have to pad a vec3 because of alignment
-const ENTITIES_COUNT = 100;
-const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity + padding
+const ENTITIES_COUNT = 200;
+const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 
 let device: GPUDevice;
@@ -19,13 +22,30 @@ let renderables: HTMLElement[] = [];
 
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
-  entityData[entity * STRIDE + 0] = Math.random() * window.innerWidth; // position.x
-  entityData[entity * STRIDE + 1] = Math.random() * window.innerHeight; // position.y
-  entityData[entity * STRIDE + 2] = Math.random(); // position.z
+  const position = vec3.fromValues(
+    Math.random() * window.innerWidth,
+    Math.random() * window.innerHeight,
+    0
+  );
 
-  entityData[entity * STRIDE + 4] = (Math.random() - 0.5) * 2 * 0.1; // velocity.x
-  entityData[entity * STRIDE + 5] = (Math.random() - 0.5) * 2 * 0.1; // velocity.y
-  entityData[entity * STRIDE + 6] = (Math.random() - 0.5) * 2 * 0.1; // velocity.z
+  const power = vec3.scale(
+    vec3.create(),
+    vec3.normalize(
+      vec3.create(),
+      vec3.fromValues(Math.random() - 0.5, Math.random() - 0.5, 0)
+    ),
+    0.1
+  );
+
+  entityData[entity * STRIDE + 0] = position[0]; // position.x
+  entityData[entity * STRIDE + 1] = position[1]; // position.y
+  entityData[entity * STRIDE + 2] = position[2]; // position.z
+
+  entityData[entity * STRIDE + 4] = 0; // velocity.x
+  entityData[entity * STRIDE + 5] = 0; // velocity.y
+  entityData[entity * STRIDE + 6] = 0; // velocity.z
+
+  entityData[entity * STRIDE + 7] = 0.5 + Math.random(); // mass
 }
 
 const setupRenderer = () => {
@@ -147,15 +167,13 @@ const compute = async () => {
   entityData = outputData;
 
   performance.mark("compute.end");
-  performance.measure("compute.duration", "compute.start", "compute.end")
-    .duration;
-
-  // console.log(performance.getEntriesByName("compute.duration")[0].duration);
-
-  // Finally, clean up the entries.
+  // console.log(
+  //   performance.measure("compute.duration", "compute.start", "compute.end")
+  //     .duration
+  // );
   performance.clearMarks();
   performance.clearMeasures();
-  // console.log("OUTPUT", outputData);
+
   requestAnimationFrame(compute);
 };
 
