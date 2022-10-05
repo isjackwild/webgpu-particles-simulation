@@ -535,11 +535,13 @@ const ENTITIES_COUNT = 200;
 const STRIDE = 8; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 const canvas = document.querySelector("canvas");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 let ctx;
 let presentationFormat;
 let device;
-let inputBuffer, outputBuffer, gpuReadBuffer, vertexDataBuffer;
-let bindGroupLayout, bindGroup;
+let bufferA, bufferB, gpuReadBuffer, vertexDataBuffer;
+let bindGroupLayout, bindGroupPing, bindGroupPong;
 let shaderModule, computePipeline;
 let renderPipeline;
 let renderPassDesc;
@@ -588,11 +590,11 @@ const requestWebGPU = async ()=>{
 };
 const createBuffers = ()=>{
     // we don't need it mapped or filled because we do this at the start of each compute loop;
-    inputBuffer = device.createBuffer({
+    bufferA = device.createBuffer({
         size: BUFFER_SIZE,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
     });
-    outputBuffer = device.createBuffer({
+    bufferB = device.createBuffer({
         size: BUFFER_SIZE,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
     });
@@ -640,7 +642,7 @@ const createBindGroups = ()=>{
         entries: [
             {
                 binding: 0,
-                visibility: GPUShaderStage.COMPUTE,
+                visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
                 buffer: {
                     type: "read-only-storage"
                 }
@@ -655,19 +657,36 @@ const createBindGroups = ()=>{
         ]
     });
     // A bind group represents the actual input/output data for a shader.
-    bindGroup = device.createBindGroup({
+    bindGroupPing = device.createBindGroup({
         layout: bindGroupLayout,
         entries: [
             {
                 binding: 0,
                 resource: {
-                    buffer: inputBuffer
+                    buffer: bufferA
                 }
             },
             {
                 binding: 1,
                 resource: {
-                    buffer: outputBuffer
+                    buffer: bufferB
+                }
+            }, 
+        ]
+    });
+    bindGroupPong = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+            {
+                binding: 0,
+                resource: {
+                    buffer: bufferA
+                }
+            },
+            {
+                binding: 1,
+                resource: {
+                    buffer: bufferB
                 }
             }, 
         ]
@@ -693,15 +712,15 @@ const createComputeCommands = ()=>{
     const commandEncoder = device.createCommandEncoder();
     const computePass = commandEncoder.beginComputePass();
     computePass.setPipeline(computePipeline);
-    computePass.setBindGroup(0, bindGroup);
+    computePass.setBindGroup(0, bindGroupPing);
     computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 256));
     computePass.end();
-    commandEncoder.copyBufferToBuffer(outputBuffer, 0, gpuReadBuffer, 0, BUFFER_SIZE);
+    commandEncoder.copyBufferToBuffer(bufferB, 0, gpuReadBuffer, 0, BUFFER_SIZE);
     return commandEncoder.finish();
 };
 const compute = async ()=>{
     performance.mark("compute.start");
-    device.queue.writeBuffer(inputBuffer, 0, entityData);
+    device.queue.writeBuffer(bufferA, 0, entityData);
     device.queue.submit([
         createComputeCommands()
     ]);
@@ -766,14 +785,12 @@ const createRenderPipeline = async ()=>{
         format: depthFormat,
         usage: GPUTextureUsage.RENDER_ATTACHMENT
     });
-    const bindGroupLayout = device.createBindGroupLayout({
-        entries: []
-    });
-    const layout = device.createPipelineLayout({
-        bindGroupLayouts: []
-    });
     renderPipeline = device.createRenderPipeline({
-        layout,
+        layout: device.createPipelineLayout({
+            bindGroupLayouts: [
+                bindGroupLayout
+            ]
+        }),
         vertex: vertexState,
         fragment: fragmentState,
         depthStencil: {
@@ -785,7 +802,7 @@ const createRenderPipeline = async ()=>{
     renderPassDesc = {
         colorAttachments: [
             {
-                view: undefined,
+                view: ctx.getCurrentTexture().createView(),
                 clearValue: {
                     r: 0.5,
                     g: 0.5,
@@ -821,6 +838,7 @@ const render = ()=>{
     const commandEncoder = device.createCommandEncoder();
     const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
     renderPass.setPipeline(renderPipeline);
+    renderPass.setBindGroup(0, bindGroupPing);
     renderPass.setVertexBuffer(0, vertexDataBuffer);
     renderPass.draw(VERTEX_COUNT, 1, 0, 0);
     renderPass.end();
@@ -834,7 +852,7 @@ const render = ()=>{
         alert("WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags.");
         return;
     }
-    setupDOMRenderer();
+    // setupDOMRenderer();
     await requestWebGPU();
     setupCanvasCtx();
     createBuffers();
@@ -842,7 +860,7 @@ const render = ()=>{
     createComputePipeline();
     await createRenderPipeline();
     requestAnimationFrame(compute);
-    requestAnimationFrame(renderDOM);
+    // requestAnimationFrame(renderDOM);
     requestAnimationFrame(render);
 })();
 
@@ -7252,7 +7270,7 @@ var forEach = function() {
 }();
 
 },{"./common.js":"lYeTq","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"l4wa9":[function(require,module,exports) {
-module.exports = "struct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) uv : vec2<f32>,\n}\n\n@vertex\nfn vertex_main(vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  output.position = vec4<f32>(vert.position.xy, 0.0, 1.0);\n  output.uv = vert.uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n  return vec4<f32>(in.uv, 0.0, 1.0);\n}";
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  mass: f32,\n}\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\n@vertex\nfn vertex_main(vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  output.position = vec4<f32>(vert.position.xy, 0.0, 1.0);\n  output.uv = vert.uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n  let bodies_count = arrayLength(&input);\n\n  let coords: vec2<f32> = in.uv * vec2<f32>(1512, 865);\n\n  var color = vec3<f32>(0);\n  // color = color + ball_sdf(vec2<f32>(100, 100), 8, coords).rgb;\n\n  for (var i: u32 = 0; i < bodies_count; i = i + 1) {\n    var entity = input[i];\n    var sdf = ball_sdf(entity.position.xy, 8, coords);\n\n    var a = step(1.0, sdf);\n    \n    color = color + a;\n  }\n\n  return vec4<f32>(color, 1.0);\n}";
 
 },{}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
 

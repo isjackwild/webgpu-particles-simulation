@@ -15,13 +15,15 @@ const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity, float mass
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 
 const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 let ctx: GPUCanvasContext;
 let presentationFormat;
 
 let device: GPUDevice;
-let inputBuffer, outputBuffer, gpuReadBuffer, vertexDataBuffer;
+let bufferA, bufferB, gpuReadBuffer, vertexDataBuffer;
 
-let bindGroupLayout, bindGroup;
+let bindGroupLayout, bindGroupPing, bindGroupPong;
 let shaderModule, computePipeline;
 
 let renderPipeline;
@@ -86,12 +88,12 @@ const requestWebGPU = async () => {
 
 const createBuffers = () => {
   // we don't need it mapped or filled because we do this at the start of each compute loop;
-  inputBuffer = device.createBuffer({
+  bufferA = device.createBuffer({
     size: BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, // DST because we copy the result back into this after computation
   });
 
-  outputBuffer = device.createBuffer({
+  bufferB = device.createBuffer({
     size: BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, // SRC because we copy from this into the gpu read staging buffer
   });
@@ -127,7 +129,7 @@ const createBindGroups = () => {
     entries: [
       {
         binding: 0,
-        visibility: GPUShaderStage.COMPUTE,
+        visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
         buffer: { type: "read-only-storage" },
       },
       {
@@ -139,11 +141,19 @@ const createBindGroups = () => {
   });
 
   // A bind group represents the actual input/output data for a shader.
-  bindGroup = device.createBindGroup({
+  bindGroupPing = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: inputBuffer } },
-      { binding: 1, resource: { buffer: outputBuffer } },
+      { binding: 0, resource: { buffer: bufferA } },
+      { binding: 1, resource: { buffer: bufferB } },
+    ],
+  });
+
+  bindGroupPong = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: bufferA } },
+      { binding: 1, resource: { buffer: bufferB } },
     ],
   });
 };
@@ -168,25 +178,19 @@ const createComputeCommands = () => {
   const commandEncoder = device.createCommandEncoder();
   const computePass = commandEncoder.beginComputePass();
   computePass.setPipeline(computePipeline);
-  computePass.setBindGroup(0, bindGroup);
+  computePass.setBindGroup(0, bindGroupPing);
 
   computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 256));
   computePass.end();
 
-  commandEncoder.copyBufferToBuffer(
-    outputBuffer,
-    0,
-    gpuReadBuffer,
-    0,
-    BUFFER_SIZE
-  );
+  commandEncoder.copyBufferToBuffer(bufferB, 0, gpuReadBuffer, 0, BUFFER_SIZE);
 
   return commandEncoder.finish();
 };
 
 const compute = async () => {
   performance.mark("compute.start");
-  device.queue.writeBuffer(inputBuffer, 0, entityData);
+  device.queue.writeBuffer(bufferA, 0, entityData);
 
   device.queue.submit([createComputeCommands()]);
 
@@ -252,15 +256,10 @@ const createRenderPipeline = async () => {
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    entries: [],
-  });
-
-  const layout = device.createPipelineLayout({
-    bindGroupLayouts: [],
-  });
   renderPipeline = device.createRenderPipeline({
-    layout,
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout],
+    }),
     vertex: vertexState,
     fragment: fragmentState,
     depthStencil: {
@@ -273,7 +272,7 @@ const createRenderPipeline = async () => {
   renderPassDesc = {
     colorAttachments: [
       {
-        view: undefined, // Assigned later
+        view: ctx.getCurrentTexture().createView(), // Assigned later
         clearValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
         loadOp: "clear",
         storeOp: "store",
@@ -314,6 +313,7 @@ const render = () => {
   const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
 
   renderPass.setPipeline(renderPipeline);
+  renderPass.setBindGroup(0, bindGroupPing);
   renderPass.setVertexBuffer(0, vertexDataBuffer);
   renderPass.draw(VERTEX_COUNT, 1, 0, 0);
   renderPass.end();
@@ -330,7 +330,7 @@ const render = () => {
     return;
   }
 
-  setupDOMRenderer();
+  // setupDOMRenderer();
   await requestWebGPU();
   setupCanvasCtx();
   createBuffers();
@@ -338,6 +338,6 @@ const render = () => {
   createComputePipeline();
   await createRenderPipeline();
   requestAnimationFrame(compute);
-  requestAnimationFrame(renderDOM);
+  // requestAnimationFrame(renderDOM);
   requestAnimationFrame(render);
 })();
