@@ -85,21 +85,32 @@ const animate = () => {
   computer.compute();
   simulationComputable.swapBindGroups();
 
-  particlesRenderable.simulationBindGroup =
+  particlesRenderable.simulationSrcBindGroup =
     simulationComputable.getActiveBindGroup();
   renderer.render();
 
   requestAnimationFrame(animate);
 };
 
-(async () => {
-  if (!navigator.gpu) {
-    alert(
-      "WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags."
-    );
-    return;
-  }
+const onMouseDown = ({ clientX, clientY }) => {
+  isMouseDown = true;
+  mouse.x = clientX;
+  mouse.y = clientY;
+};
 
+const onMouseUp = () => {
+  isMouseDown = false;
+  mouse.x = -999999;
+  mouse.y = -999999;
+};
+
+const onMouseMove = ({ clientX, clientY }) => {
+  if (!isMouseDown) return;
+  mouse.x = clientX;
+  mouse.y = clientY;
+};
+
+const init = async () => {
   device = (await requestWebGPU()) as GPUDevice;
   const texture = await new TextureLoader(device).loadTextureFromImageSrc(
     imgSrc
@@ -132,21 +143,9 @@ const animate = () => {
   renderer.addRenderable(particlesRenderable);
 
   requestAnimationFrame(animate);
-  window.addEventListener("mousedown", ({ clientX, clientY }) => {
-    mouse.x = clientX;
-    mouse.y = clientY;
-    isMouseDown = true;
-  });
-  window.addEventListener("mouseup", () => {
-    isMouseDown = false;
-  });
-  window.addEventListener("mousemove", ({ clientX, clientY }) => {
-    if (isMouseDown) {
-      mouse.x = clientX;
-      mouse.y = clientY;
-    } else {
-      mouse.x = -9999;
-      mouse.y = -9999;
-    }
-  });
-})();
+  window.addEventListener("mousedown", onMouseDown);
+  window.addEventListener("mouseup", onMouseUp);
+  window.addEventListener("mousemove", onMouseMove);
+};
+
+init();

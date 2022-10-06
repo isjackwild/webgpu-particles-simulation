@@ -48,7 +48,7 @@ fn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput
   var entity = input[instance_index];
 
   var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;
-  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);
+  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), entity.position.z, 1.0);
   output.texture_uv = entity.texture_uv;
   return output;
 }

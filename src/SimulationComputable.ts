@@ -12,7 +12,7 @@ const createEntityData: (count: number) => Float32Array = (count) => {
 
     entityData[i * stride + 0] = x; // position.x
     entityData[i * stride + 1] = y; // position.y
-    entityData[i * stride + 2] = 0; // position.z
+    entityData[i * stride + 2] = 0.9; // position.z
 
     entityData[i * stride + 4] = 0; // velocity.x
     entityData[i * stride + 5] = 0; // velocity.y

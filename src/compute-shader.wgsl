@@ -94,6 +94,8 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
 
   (*next_state).velocity = (*next_state).velocity + acceleration;
   (*next_state).position = (*next_state).position + (*next_state).velocity;
+
+  (*next_state).position.z = 0.9 - (step(0.01, length((*next_state).velocity)) * 0.1); // moving pixels render on top
   
   // WALLS
   // TOP
