@@ -12,7 +12,7 @@ struct Uniforms {
 
 @group(0) @binding(0) var<storage, read> input : array<Body>;
 @group(0) @binding(1) var<storage, read_write> output : array<Body>;
-@group(0) @binding(2) var<uniform> uniforms : Uniforms;
+@group(1) @binding(0) var<uniform> uniforms : Uniforms;
 
 
 fn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {

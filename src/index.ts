@@ -25,10 +25,13 @@ let ctx: GPUCanvasContext;
 let presentationFormat;
 
 let device: GPUDevice;
-let bufferA, bufferB, vertexDataBuffer;
+let simulationBufferA, simulationBufferB, vertexDataBuffer;
 
-let bindGroupLayout, bindGroupA, bindGroupB;
-let uniformBuffer, uniformBindGroup, cubeTexture: GPUTexture;
+let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
+let uniformBuffer,
+  uniformsBindGroupLayout,
+  uniformsBindGroup,
+  cubeTexture: GPUTexture;
 
 let shaderModule, computePipeline;
 let renderPipeline;
@@ -41,22 +44,8 @@ let isMouseDown = false;
 
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
-  const position = vec3.fromValues(
-    Math.random() * window.innerWidth,
-    Math.random() * window.innerHeight,
-    0
-  );
-
   const x = entity % window.innerWidth;
   const y = Math.floor(entity / window.innerWidth);
-
-  // const velocity = vec3.fromValues(
-  //   Math.random() * 2 - 1,
-  //   Math.random() * 2 - 1,
-  //   0
-  // );
-  // vec3.normalize(velocity, velocity);
-  // vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
 
   entityData[entity * STRIDE + 0] = x; // position.x
   entityData[entity * STRIDE + 1] = y; // position.y
@@ -67,21 +56,9 @@ for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
   entityData[entity * STRIDE + 6] = 0; // velocity.z
 
   entityData[entity * STRIDE + 8] = x / window.innerWidth; // uv.u
-  entityData[entity * STRIDE + 9] = y / window.innerWidth; // uv.v
+  entityData[entity * STRIDE + 9] = y / window.innerHeight; // uv.v
   entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
 }
-
-const setupCanvasCtx = () => {
-  ctx = canvas.getContext("webgpu") as GPUCanvasContext;
-  presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-
-  ctx.configure({
-    device,
-    format: presentationFormat,
-    alphaMode: "opaque",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-};
 
 const requestWebGPU = async () => {
   if (device) return device;
@@ -95,16 +72,28 @@ const requestWebGPU = async () => {
   return device;
 };
 
+const setupCanvasCtx = () => {
+  ctx = canvas.getContext("webgpu") as GPUCanvasContext;
+  presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+  ctx.configure({
+    device,
+    format: presentationFormat,
+    alphaMode: "opaque",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+};
+
 const createBuffers = () => {
-  bufferA = device.createBuffer({
+  simulationBufferA = device.createBuffer({
     size: BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  new Float32Array(bufferA.getMappedRange()).set([...entityData]);
-  bufferA.unmap();
+  new Float32Array(simulationBufferA.getMappedRange()).set([...entityData]);
+  simulationBufferA.unmap();
 
-  bufferB = device.createBuffer({
+  simulationBufferB = device.createBuffer({
     size: BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
@@ -114,7 +103,6 @@ const createBuffers = () => {
     usage: GPUBufferUsage.VERTEX,
     mappedAtCreation: true,
   });
-
   // prettier-ignore
   new Float32Array(vertexDataBuffer.getMappedRange()).set([
     1, 1,     1, 0, //position, uv
@@ -125,7 +113,6 @@ const createBuffers = () => {
     -1, -1,   0, 1, 
     -1, 1,    0, 0,
   ]);
-
   vertexDataBuffer.unmap();
 
   const uniformBufferSize =
@@ -145,7 +132,7 @@ const createBindGroups = () => {
     minFilter: "linear",
   });
 
-  bindGroupLayout = device.createBindGroupLayout({
+  simulationBindGroupLayout = device.createBindGroupLayout({
     entries: [
       {
         binding: 0,
@@ -160,8 +147,30 @@ const createBindGroups = () => {
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: "storage" },
       },
+    ],
+  });
+
+  // A bind group represents the actual input/output data for a shader.
+  simulationBindGroupA = device.createBindGroup({
+    layout: simulationBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: simulationBufferA } },
+      { binding: 1, resource: { buffer: simulationBufferB } },
+    ],
+  });
+
+  simulationBindGroupB = device.createBindGroup({
+    layout: simulationBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: simulationBufferB } },
+      { binding: 1, resource: { buffer: simulationBufferA } },
+    ],
+  });
+
+  uniformsBindGroupLayout = device.createBindGroupLayout({
+    entries: [
       {
-        binding: 2,
+        binding: 0,
         visibility:
           GPUShaderStage.VERTEX |
           GPUShaderStage.FRAGMENT |
@@ -169,16 +178,15 @@ const createBindGroups = () => {
         buffer: { type: "uniform" },
       },
       {
-        binding: 3,
+        binding: 1,
         visibility:
           GPUShaderStage.VERTEX |
           GPUShaderStage.FRAGMENT |
           GPUShaderStage.COMPUTE,
         sampler: { type: "filtering" },
-        // buffer: { type: "uniform" },
       },
       {
-        binding: 4,
+        binding: 2,
         visibility:
           GPUShaderStage.VERTEX |
           GPUShaderStage.FRAGMENT |
@@ -188,52 +196,25 @@ const createBindGroups = () => {
           multisampled: false,
           viewDimension: "2d",
         },
-        // buffer: { type: "uniform" },
       },
     ],
   });
 
-  GPUSamplerBindingLayout;
-  // A bind group represents the actual input/output data for a shader.
-  bindGroupA = device.createBindGroup({
-    layout: bindGroupLayout,
+  uniformsBindGroup = device.createBindGroup({
+    layout: uniformsBindGroupLayout,
     entries: [
-      { binding: 0, resource: { buffer: bufferA } },
-      { binding: 1, resource: { buffer: bufferB } },
       {
-        binding: 2,
+        binding: 0,
         resource: {
           buffer: uniformBuffer,
         },
       },
       {
-        binding: 3,
+        binding: 1,
         resource: sampler,
       },
-      {
-        binding: 4,
-        resource: cubeTexture.createView(),
-      },
-    ],
-  });
-
-  bindGroupB = device.createBindGroup({
-    layout: bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: bufferB } },
-      { binding: 1, resource: { buffer: bufferA } },
       {
         binding: 2,
-        resource: {
-          buffer: uniformBuffer,
-        },
-      },
-      {
-        binding: 3,
-        resource: sampler,
-      },
-      {
-        binding: 4,
         resource: cubeTexture.createView(),
       },
     ],
@@ -247,7 +228,7 @@ const createComputePipeline = () => {
 
   computePipeline = device.createComputePipeline({
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
+      bindGroupLayouts: [simulationBindGroupLayout, uniformsBindGroupLayout],
     }),
     compute: {
       module: shaderModule,
@@ -256,11 +237,12 @@ const createComputePipeline = () => {
   });
 };
 
-const createComputeCommands = (bindGroup) => {
+const createComputeCommands = (activeSimulationBindGroup) => {
   const commandEncoder = device.createCommandEncoder();
   const computePass = commandEncoder.beginComputePass();
   computePass.setPipeline(computePipeline);
-  computePass.setBindGroup(0, bindGroup);
+  computePass.setBindGroup(0, activeSimulationBindGroup);
+  computePass.setBindGroup(1, uniformsBindGroup);
 
   computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 64));
   computePass.end();
@@ -272,7 +254,9 @@ const compute = () => {
   performance.mark("compute.start");
 
   device.queue.submit([
-    createComputeCommands(loops % 2 === 0 ? bindGroupA : bindGroupB),
+    createComputeCommands(
+      loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB
+    ),
   ]);
 
   performance.mark("compute.end");
@@ -345,7 +329,7 @@ const createRenderPipeline = async () => {
 
   renderPipeline = device.createRenderPipeline({
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
+      bindGroupLayouts: [simulationBindGroupLayout, uniformsBindGroupLayout],
     }),
     vertex: vertexState,
     fragment: fragmentState,
@@ -386,7 +370,11 @@ const render = () => {
   const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
 
   renderPass.setPipeline(renderPipeline);
-  renderPass.setBindGroup(0, loops % 2 === 0 ? bindGroupB : bindGroupA);
+  renderPass.setBindGroup(
+    0,
+    loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA
+  );
+  renderPass.setBindGroup(1, uniformsBindGroup);
   renderPass.setVertexBuffer(0, vertexDataBuffer);
   renderPass.draw(VERTEX_COUNT, ENTITIES_COUNT, 0, 0);
   renderPass.end();
