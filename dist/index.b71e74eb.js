@@ -520,6 +520,7 @@ function hmrAcceptRun(bundle, id) {
 
 },{}],"h7u1C":[function(require,module,exports) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+/// <reference types="@webgpu/types" />
 var _img0481Png = require("./maps/IMG_0481.png");
 var _img0481PngDefault = parcelHelpers.interopDefault(_img0481Png);
 var _particlesRenderable = require("./ParticlesRenderable");
@@ -533,14 +534,7 @@ var _webGPUCompute = require("./WebGPUCompute");
 var _webGPUComputeDefault = parcelHelpers.interopDefault(_webGPUCompute);
 var _webGPURenderer = require("./WebGPURenderer");
 var _webGPURendererDefault = parcelHelpers.interopDefault(_webGPURenderer);
-// TODO — Uniforms and texture on different bind group!
-// SECTION ON ALIGNMENT...
-// https://surma.dev/things/webgpu/
-// you have to pad a vec3 because of alignment
 const ENTITIES_COUNT = window.innerWidth * window.innerHeight;
-// const ENTITIES_COUNT = 2_000_000;
-const STRIDE = 12; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
-const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 const canvas = document.querySelector("canvas");
 canvas.width = window.innerWidth * window.devicePixelRatio;
 canvas.height = window.innerHeight * window.devicePixelRatio;
@@ -549,109 +543,19 @@ let particlesRenderable;
 let computer;
 let simulationComputable;
 let device;
-let simulationBufferA, simulationBufferB;
-let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
-let uniformBuffer, uniformsBindGroupLayout, uniformsBindGroup, texture;
-let loops = 0;
+let uniformBuffer;
 const mouse = {
     x: -9999,
     y: -9999
 };
 let isMouseDown = false;
-let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
-for(let entity = 0; entity < ENTITIES_COUNT; entity++){
-    const x = entity % window.innerWidth;
-    const y = Math.floor(entity / window.innerWidth);
-    entityData[entity * STRIDE + 0] = x; // position.x
-    entityData[entity * STRIDE + 1] = y; // position.y
-    entityData[entity * STRIDE + 2] = 0; // position.z
-    entityData[entity * STRIDE + 4] = 0; // velocity.x
-    entityData[entity * STRIDE + 5] = 0; // velocity.y
-    entityData[entity * STRIDE + 6] = 0; // velocity.z
-    entityData[entity * STRIDE + 8] = x / window.innerWidth; // uv.u
-    entityData[entity * STRIDE + 9] = y / window.innerHeight; // uv.v
-    entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
-}
-const createBuffers = ()=>{
-    simulationBufferA = device.createBuffer({
-        size: BUFFER_SIZE,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        mappedAtCreation: true
-    });
-    new Float32Array(simulationBufferA.getMappedRange()).set([
-        ...entityData
-    ]);
-    simulationBufferA.unmap();
-    simulationBufferB = device.createBuffer({
-        size: BUFFER_SIZE,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
-    });
+const createSharedUniformBuffersAndBindGroups = ()=>{
     const uniformBufferSize = 2 * Float32Array.BYTES_PER_ELEMENT + 2 * Float32Array.BYTES_PER_ELEMENT; // resolution, mouse
-    uniformBuffer = device.createBuffer({
+    const uniformBuffer1 = device.createBuffer({
         size: uniformBufferSize,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
-};
-const createBindGroups = ()=>{
-    // A bind group layout defines the input/output interface expected by a shader
-    const sampler = device.createSampler({
-        magFilter: "linear",
-        minFilter: "linear"
-    });
-    simulationBindGroupLayout = device.createBindGroupLayout({
-        entries: [
-            {
-                binding: 0,
-                visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
-                buffer: {
-                    type: "read-only-storage"
-                }
-            },
-            {
-                binding: 1,
-                visibility: GPUShaderStage.COMPUTE,
-                buffer: {
-                    type: "storage"
-                }
-            }, 
-        ]
-    });
-    // A bind group represents the actual input/output data for a shader.
-    simulationBindGroupA = device.createBindGroup({
-        layout: simulationBindGroupLayout,
-        entries: [
-            {
-                binding: 0,
-                resource: {
-                    buffer: simulationBufferA
-                }
-            },
-            {
-                binding: 1,
-                resource: {
-                    buffer: simulationBufferB
-                }
-            }, 
-        ]
-    });
-    simulationBindGroupB = device.createBindGroup({
-        layout: simulationBindGroupLayout,
-        entries: [
-            {
-                binding: 0,
-                resource: {
-                    buffer: simulationBufferB
-                }
-            },
-            {
-                binding: 1,
-                resource: {
-                    buffer: simulationBufferA
-                }
-            }, 
-        ]
-    });
-    uniformsBindGroupLayout = device.createBindGroupLayout({
+    const sharedUniformsBindGroupLayout = device.createBindGroupLayout({
         entries: [
             {
                 binding: 0,
@@ -659,44 +563,25 @@ const createBindGroups = ()=>{
                 buffer: {
                     type: "uniform"
                 }
-            },
-            {
-                binding: 1,
-                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
-                sampler: {
-                    type: "filtering"
-                }
-            },
-            {
-                binding: 2,
-                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
-                texture: {
-                    sampleType: "float",
-                    multisampled: false,
-                    viewDimension: "2d"
-                }
             }, 
         ]
     });
-    uniformsBindGroup = device.createBindGroup({
-        layout: uniformsBindGroupLayout,
+    const sharedUniformsBindGroup = device.createBindGroup({
+        layout: sharedUniformsBindGroupLayout,
         entries: [
             {
                 binding: 0,
                 resource: {
-                    buffer: uniformBuffer
+                    buffer: uniformBuffer1
                 }
-            },
-            {
-                binding: 1,
-                resource: sampler
-            },
-            {
-                binding: 2,
-                resource: texture.createView()
             }, 
         ]
     });
+    return [
+        sharedUniformsBindGroupLayout,
+        sharedUniformsBindGroup,
+        uniformBuffer1, 
+    ];
 };
 const animate = ()=>{
     const uniformsArray = new Float32Array([
@@ -706,13 +591,10 @@ const animate = ()=>{
         mouse.y, 
     ]);
     device.queue.writeBuffer(uniformBuffer, 0, uniformsArray);
-    simulationComputable.simulationSrcBindGroup = loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB;
     computer.compute();
-    particlesRenderable.simulationSrcBindGroup = loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA;
+    simulationComputable.swapBindGroups();
+    particlesRenderable.simulationBindGroup = simulationComputable.getActiveBindGroup();
     renderer.render();
-    loops++;
-    performance.clearMarks();
-    performance.clearMeasures();
     requestAnimationFrame(animate);
 };
 (async ()=>{
@@ -721,14 +603,14 @@ const animate = ()=>{
         return;
     }
     device = await _utils.requestWebGPU();
+    const texture = await new _textureLoaderDefault.default(device).loadTextureFromImageSrc(_img0481PngDefault.default);
     renderer = new _webGPURendererDefault.default(device, canvas);
     computer = new _webGPUComputeDefault.default(device);
-    texture = await new _textureLoaderDefault.default(device).loadTextureFromImageSrc(_img0481PngDefault.default);
-    createBuffers();
-    createBindGroups();
-    simulationComputable = new _simulationComputableDefault.default(device, ENTITIES_COUNT, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout);
+    const [sharedUniformsBindGroupLayout, sharedUniformsBindGroup, buffer] = createSharedUniformBuffersAndBindGroups();
+    uniformBuffer = buffer;
+    simulationComputable = new _simulationComputableDefault.default(device, ENTITIES_COUNT, sharedUniformsBindGroupLayout, sharedUniformsBindGroup);
     computer.addComputable(simulationComputable);
-    particlesRenderable = new _particlesRenderableDefault.default(device, renderer, ENTITIES_COUNT, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout);
+    particlesRenderable = new _particlesRenderableDefault.default(device, renderer, ENTITIES_COUNT, sharedUniformsBindGroupLayout, sharedUniformsBindGroup, simulationComputable.getBindGroupLayout(), texture);
     renderer.addRenderable(particlesRenderable);
     requestAnimationFrame(animate);
     window.addEventListener("mousedown", ({ clientX , clientY  })=>{
@@ -962,14 +844,16 @@ const createQuad = ()=>{
     };
 };
 class ParticlesRenderable {
-    constructor(device, renderer, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
+    constructor(device, renderer, particlesCount, sharedUniformsBindGroupLayout, sharedUniformsBindGroup, simulationBindGroupLayout, texture){
         this.device = device;
         this.renderer = renderer;
         this.particlesCount = particlesCount;
-        this.uniformsBindGroupLayout = uniformsBindGroupLayout;
-        this.uniformsBindGroup = uniformsBindGroup;
+        this.sharedUniformsBindGroupLayout = sharedUniformsBindGroupLayout;
+        this.sharedUniformsBindGroup = sharedUniformsBindGroup;
         this.simulationBindGroupLayout = simulationBindGroupLayout;
+        this.texture = texture;
         this.createVertexBuffer();
+        this.createUniformsBuffersAndBindGroups();
         this.createPipeline();
     }
     createVertexBuffer() {
@@ -982,6 +866,44 @@ class ParticlesRenderable {
         });
         new Float32Array(this.vertexBuffer.getMappedRange()).set(bufferData);
         this.vertexBuffer.unmap();
+    }
+    createUniformsBuffersAndBindGroups() {
+        this.uniformsBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+                    sampler: {
+                        type: "filtering"
+                    }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+                    texture: {
+                        sampleType: "float",
+                        multisampled: false,
+                        viewDimension: "2d"
+                    }
+                }, 
+            ]
+        });
+        this.uniformsBindGroup = this.device.createBindGroup({
+            layout: this.uniformsBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: this.device.createSampler({
+                        magFilter: "linear",
+                        minFilter: "linear"
+                    })
+                },
+                {
+                    binding: 1,
+                    resource: this.texture.createView()
+                }, 
+            ]
+        });
     }
     createPipeline() {
         const shaderModule = this.device.createShaderModule({
@@ -1029,14 +951,15 @@ class ParticlesRenderable {
                 }, 
             ]
         };
-        const bindGroupLayout = this.device.createPipelineLayout({
+        const pipelineLayout = this.device.createPipelineLayout({
             bindGroupLayouts: [
                 this.simulationBindGroupLayout,
+                this.sharedUniformsBindGroupLayout,
                 this.uniformsBindGroupLayout, 
             ]
         });
         this.pipeline = this.device.createRenderPipeline({
-            layout: bindGroupLayout,
+            layout: pipelineLayout,
             vertex: vertexState,
             fragment: fragmentState,
             depthStencil: {
@@ -1058,7 +981,8 @@ class ParticlesRenderable {
         const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
         renderPass.setPipeline(this.pipeline);
         renderPass.setBindGroup(0, this.simulationSrcBindGroup);
-        renderPass.setBindGroup(1, this.uniformsBindGroup);
+        renderPass.setBindGroup(1, this.sharedUniformsBindGroup);
+        renderPass.setBindGroup(2, this.uniformsBindGroup);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
         renderPass.draw(this.vertexCount, this.particlesCount, 0, 0);
         renderPass.end();
@@ -1068,7 +992,7 @@ class ParticlesRenderable {
 exports.default = ParticlesRenderable;
 
 },{"bundle-text:./draw-shader.wgsl":"6HAGK","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"6HAGK":[function(require,module,exports) {
-module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(1) @binding(1) var mySampler: sampler;\n@group(1) @binding(2) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(2) @binding(0) var mySampler: sampler;\n@group(2) @binding(1) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
 
 },{}],"6Mk9B":[function(require,module,exports) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
@@ -1116,14 +1040,103 @@ var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
 parcelHelpers.defineInteropFlag(exports);
 var _computeShaderWgsl = require("bundle-text:./compute-shader.wgsl");
 var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl);
+const createEntityData = (count)=>{
+    const stride = 12; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
+    const size = stride * Float32Array.BYTES_PER_ELEMENT * count;
+    const entityData = new Float32Array(new ArrayBuffer(size));
+    for(let i = 0; i < count; i++){
+        const x = i % window.innerWidth;
+        const y = Math.floor(i / window.innerWidth);
+        entityData[i * stride + 0] = x; // position.x
+        entityData[i * stride + 1] = y; // position.y
+        entityData[i * stride + 2] = 0; // position.z
+        entityData[i * stride + 4] = 0; // velocity.x
+        entityData[i * stride + 5] = 0; // velocity.y
+        entityData[i * stride + 6] = 0; // velocity.z
+        entityData[i * stride + 8] = x / window.innerWidth; // uv.u
+        entityData[i * stride + 9] = y / window.innerHeight; // uv.v
+        entityData[i * stride + 10] = 0.5 + Math.random(); // mass
+    }
+    return entityData;
+};
 class SimulationComputable {
-    constructor(device, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
+    constructor(device, particlesCount, uniformsBindGroupLayout, uniformsBindGroup){
         this.device = device;
         this.particlesCount = particlesCount;
         this.uniformsBindGroupLayout = uniformsBindGroupLayout;
         this.uniformsBindGroup = uniformsBindGroup;
-        this.simulationBindGroupLayout = simulationBindGroupLayout;
+        this.bindGroupSwapIndex = 0;
+        this.entityData = createEntityData(this.particlesCount);
+        this.createSimulationBuffersAndBindGroups();
         this.createPipeline();
+    }
+    createSimulationBuffersAndBindGroups() {
+        this.simulationBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX,
+                    buffer: {
+                        type: "read-only-storage"
+                    }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: {
+                        type: "storage"
+                    }
+                }, 
+            ]
+        });
+        const size = this.entityData.byteLength;
+        this.simulationBufferA = this.device.createBuffer({
+            size,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true
+        });
+        new Float32Array(this.simulationBufferA.getMappedRange()).set([
+            ...this.entityData, 
+        ]);
+        this.simulationBufferA.unmap();
+        this.simulationBufferB = this.device.createBuffer({
+            size,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        });
+        this.simulationBindGroupA = this.device.createBindGroup({
+            layout: this.simulationBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: this.simulationBufferA
+                    }
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: this.simulationBufferB
+                    }
+                }, 
+            ]
+        });
+        this.simulationBindGroupB = this.device.createBindGroup({
+            layout: this.simulationBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: this.simulationBufferB
+                    }
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: this.simulationBufferA
+                    }
+                }, 
+            ]
+        });
     }
     createPipeline() {
         const shaderModule = this.device.createShaderModule({
@@ -1143,18 +1156,21 @@ class SimulationComputable {
             }
         });
     }
-    set simulationSrcBindGroup(group) {
-        this.simulationBindGroup = group;
+    getBindGroupLayout() {
+        return this.simulationBindGroupLayout;
     }
-    get simulationSrcBindGroup() {
-        return this.simulationBindGroup;
+    getActiveBindGroup() {
+        return this.bindGroupSwapIndex % 2 === 0 ? this.simulationBindGroupA : this.simulationBindGroupB;
+    }
+    swapBindGroups() {
+        this.bindGroupSwapIndex++;
     }
     getCommands() {
-        if (!this.simulationSrcBindGroup) return;
+        if (!this.getActiveBindGroup()) return;
         const commandEncoder = this.device.createCommandEncoder();
         const computePass = commandEncoder.beginComputePass();
         computePass.setPipeline(this.pipeline);
-        computePass.setBindGroup(0, this.simulationSrcBindGroup);
+        computePass.setBindGroup(0, this.getActiveBindGroup());
         computePass.setBindGroup(1, this.uniformsBindGroup);
         computePass.dispatchWorkgroups(Math.ceil(this.particlesCount / 64));
         computePass.end();

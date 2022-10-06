@@ -45,16 +45,20 @@ class ParticlesRenderable implements RenderableInterface {
   private simulationBindGroup?: GPUBindGroup;
   private vertexBuffer: GPUBuffer;
   private vertexCount: number;
+  private uniformsBindGroupLayout: GPUBindGroupLayout;
+  private uniformsBindGroup: GPUBindGroup;
 
   constructor(
     private device: GPUDevice,
     private renderer: WebGPURenderer,
     private particlesCount: number,
-    private uniformsBindGroupLayout: GPUBindGroupLayout,
-    private uniformsBindGroup: GPUBindGroup,
-    private simulationBindGroupLayout: GPUBindGroupLayout
+    private sharedUniformsBindGroupLayout: GPUBindGroupLayout,
+    private sharedUniformsBindGroup: GPUBindGroup,
+    private simulationBindGroupLayout: GPUBindGroupLayout,
+    private texture: GPUTexture
   ) {
     this.createVertexBuffer();
+    this.createUniformsBuffersAndBindGroups();
     this.createPipeline();
   }
 
@@ -68,6 +72,50 @@ class ParticlesRenderable implements RenderableInterface {
     });
     new Float32Array(this.vertexBuffer.getMappedRange()).set(bufferData);
     this.vertexBuffer.unmap();
+  }
+
+  private createUniformsBuffersAndBindGroups() {
+    this.uniformsBindGroupLayout = this.device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility:
+            GPUShaderStage.VERTEX |
+            GPUShaderStage.FRAGMENT |
+            GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 1,
+          visibility:
+            GPUShaderStage.VERTEX |
+            GPUShaderStage.FRAGMENT |
+            GPUShaderStage.COMPUTE,
+          texture: {
+            sampleType: "float",
+            multisampled: false,
+            viewDimension: "2d",
+          },
+        },
+      ],
+    });
+
+    this.uniformsBindGroup = this.device.createBindGroup({
+      layout: this.uniformsBindGroupLayout,
+      entries: [
+        {
+          binding: 0,
+          resource: this.device.createSampler({
+            magFilter: "linear",
+            minFilter: "linear",
+          }),
+        },
+        {
+          binding: 1,
+          resource: this.texture.createView(),
+        },
+      ],
+    });
   }
 
   private createPipeline() {
@@ -117,15 +165,16 @@ class ParticlesRenderable implements RenderableInterface {
       ],
     };
 
-    const bindGroupLayout = this.device.createPipelineLayout({
+    const pipelineLayout = this.device.createPipelineLayout({
       bindGroupLayouts: [
         this.simulationBindGroupLayout,
+        this.sharedUniformsBindGroupLayout,
         this.uniformsBindGroupLayout,
       ],
     });
 
     this.pipeline = this.device.createRenderPipeline({
-      layout: bindGroupLayout,
+      layout: pipelineLayout,
       vertex: vertexState,
       fragment: fragmentState,
       depthStencil: {
@@ -153,7 +202,8 @@ class ParticlesRenderable implements RenderableInterface {
     const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
     renderPass.setPipeline(this.pipeline);
     renderPass.setBindGroup(0, this.simulationSrcBindGroup);
-    renderPass.setBindGroup(1, this.uniformsBindGroup);
+    renderPass.setBindGroup(1, this.sharedUniformsBindGroup);
+    renderPass.setBindGroup(2, this.uniformsBindGroup);
     renderPass.setVertexBuffer(0, this.vertexBuffer);
     renderPass.draw(this.vertexCount, this.particlesCount, 0, 0);
     renderPass.end();

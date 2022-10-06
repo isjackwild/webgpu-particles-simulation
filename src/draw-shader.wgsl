@@ -12,8 +12,8 @@ struct Uniforms {
 
 @group(0) @binding(0) var<storage, read> input : array<Body>;
 @group(1) @binding(0) var<uniform> uniforms : Uniforms;
-@group(1) @binding(1) var mySampler: sampler;
-@group(1) @binding(2) var myTexture: texture_2d<f32>;
+@group(2) @binding(0) var mySampler: sampler;
+@group(2) @binding(1) var myTexture: texture_2d<f32>;
 
 struct VertexInput {
   @location(0) position : vec2<f32>,
