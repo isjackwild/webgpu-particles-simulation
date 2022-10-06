@@ -4,20 +4,23 @@ console.log("Hello world!");
 import computeShader from "bundle-text:./compute-shader.wgsl";
 import drawShader from "bundle-text:./draw-shader.wgsl";
 import { vec3 } from "gl-matrix";
+import imgSrc from "./IMG_0481.png";
+
+// TODO — Uniforms and texture on different bind group!
 
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
 
 // you have to pad a vec3 because of alignment
 const VERTEX_COUNT = 6;
-const ENTITIES_COUNT = 500_000;
+const ENTITIES_COUNT = window.innerWidth * window.innerHeight;
 // const ENTITIES_COUNT = 2_000_000;
-const STRIDE = 4 + 4; // vec3 position + padding, vec3 velocity, float mass
+const STRIDE = 4 + 4 + 2 + 2; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 
 const canvas = document.querySelector("canvas") as HTMLCanvasElement;
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+canvas.width = window.innerWidth * window.devicePixelRatio;
+canvas.height = window.innerHeight * window.devicePixelRatio;
 let ctx: GPUCanvasContext;
 let presentationFormat;
 
@@ -25,7 +28,7 @@ let device: GPUDevice;
 let bufferA, bufferB, vertexDataBuffer;
 
 let bindGroupLayout, bindGroupA, bindGroupB;
-let uniformBuffer, uniformBindGroup;
+let uniformBuffer, uniformBindGroup, cubeTexture: GPUTexture;
 
 let shaderModule, computePipeline;
 let renderPipeline;
@@ -33,7 +36,8 @@ let renderPassDesc: GPURenderPassDescriptor;
 
 let loops = 0;
 
-const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+const mouse = { x: -9999, y: -9999 };
+let isMouseDown = false;
 
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
@@ -43,23 +47,28 @@ for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
     0
   );
 
-  const velocity = vec3.fromValues(
-    Math.random() * 2 - 1,
-    Math.random() * 2 - 1,
-    0
-  );
-  vec3.normalize(velocity, velocity);
-  vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
+  const x = entity % window.innerWidth;
+  const y = Math.floor(entity / window.innerWidth);
 
-  entityData[entity * STRIDE + 0] = position[0]; // position.x
-  entityData[entity * STRIDE + 1] = position[1]; // position.y
-  entityData[entity * STRIDE + 2] = position[2]; // position.z
+  // const velocity = vec3.fromValues(
+  //   Math.random() * 2 - 1,
+  //   Math.random() * 2 - 1,
+  //   0
+  // );
+  // vec3.normalize(velocity, velocity);
+  // vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
 
-  entityData[entity * STRIDE + 4] = velocity[0]; // velocity.x
-  entityData[entity * STRIDE + 5] = velocity[1]; // velocity.y
-  entityData[entity * STRIDE + 6] = velocity[2]; // velocity.z
+  entityData[entity * STRIDE + 0] = x; // position.x
+  entityData[entity * STRIDE + 1] = y; // position.y
+  entityData[entity * STRIDE + 2] = 0; // position.z
 
-  entityData[entity * STRIDE + 7] = 0.5 + Math.random(); // mass
+  entityData[entity * STRIDE + 4] = 0; // velocity.x
+  entityData[entity * STRIDE + 5] = 0; // velocity.y
+  entityData[entity * STRIDE + 6] = 0; // velocity.z
+
+  entityData[entity * STRIDE + 8] = x / window.innerWidth; // uv.u
+  entityData[entity * STRIDE + 9] = y / window.innerWidth; // uv.v
+  entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
 }
 
 const setupCanvasCtx = () => {
@@ -131,6 +140,11 @@ const createBuffers = () => {
 
 const createBindGroups = () => {
   // A bind group layout defines the input/output interface expected by a shader
+  const sampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+  });
+
   bindGroupLayout = device.createBindGroupLayout({
     entries: [
       {
@@ -154,9 +168,32 @@ const createBindGroups = () => {
           GPUShaderStage.COMPUTE,
         buffer: { type: "uniform" },
       },
+      {
+        binding: 3,
+        visibility:
+          GPUShaderStage.VERTEX |
+          GPUShaderStage.FRAGMENT |
+          GPUShaderStage.COMPUTE,
+        sampler: { type: "filtering" },
+        // buffer: { type: "uniform" },
+      },
+      {
+        binding: 4,
+        visibility:
+          GPUShaderStage.VERTEX |
+          GPUShaderStage.FRAGMENT |
+          GPUShaderStage.COMPUTE,
+        texture: {
+          sampleType: "float",
+          multisampled: false,
+          viewDimension: "2d",
+        },
+        // buffer: { type: "uniform" },
+      },
     ],
   });
 
+  GPUSamplerBindingLayout;
   // A bind group represents the actual input/output data for a shader.
   bindGroupA = device.createBindGroup({
     layout: bindGroupLayout,
@@ -168,6 +205,14 @@ const createBindGroups = () => {
         resource: {
           buffer: uniformBuffer,
         },
+      },
+      {
+        binding: 3,
+        resource: sampler,
+      },
+      {
+        binding: 4,
+        resource: cubeTexture.createView(),
       },
     ],
   });
@@ -182,6 +227,14 @@ const createBindGroups = () => {
         resource: {
           buffer: uniformBuffer,
         },
+      },
+      {
+        binding: 3,
+        resource: sampler,
+      },
+      {
+        binding: 4,
+        resource: cubeTexture.createView(),
       },
     ],
   });
@@ -257,10 +310,26 @@ const createRenderPipeline = async () => {
     ],
   };
 
-  const fragmentState = {
+  const fragmentState: GPUFragmentState = {
     module: shaderModule,
     entryPoint: "fragment_main",
-    targets: [{ format: presentationFormat }],
+    targets: [
+      {
+        format: presentationFormat,
+        blend: {
+          color: {
+            operation: "add",
+            srcFactor: "one",
+            dstFactor: "one",
+          },
+          alpha: {
+            operation: "add",
+            srcFactor: "one",
+            dstFactor: "one",
+          },
+        },
+      },
+    ],
   };
 
   const depthFormat = "depth24plus-stencil8";
@@ -291,14 +360,13 @@ const createRenderPipeline = async () => {
     colorAttachments: [
       {
         view: ctx.getCurrentTexture().createView(), // Assigned later
-        clearValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
         loadOp: "clear",
         storeOp: "store",
       },
     ],
     depthStencilAttachment: {
       view: depthTexture.createView(),
-
       depthClearValue: 1.0,
       depthLoadOp: "clear",
       depthStoreOp: "store",
@@ -349,6 +417,27 @@ const animate = () => {
   requestAnimationFrame(animate);
 };
 
+const loadTexture = async () => {
+  const img = document.createElement("img");
+  img.src = imgSrc;
+  await img.decode();
+  const imageBitmap = await createImageBitmap(img);
+
+  cubeTexture = device.createTexture({
+    size: [imageBitmap.width, imageBitmap.height, 1],
+    format: "rgba8unorm",
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture(
+    { source: imageBitmap },
+    { texture: cubeTexture },
+    [imageBitmap.width, imageBitmap.height]
+  );
+};
+
 (async () => {
   if (!navigator.gpu) {
     alert(
@@ -359,6 +448,7 @@ const animate = () => {
 
   // setupDOMRenderer();
   await requestWebGPU();
+  await loadTexture();
   setupCanvasCtx();
   createBuffers();
   createBindGroups();
@@ -366,8 +456,21 @@ const animate = () => {
   await createRenderPipeline();
 
   requestAnimationFrame(animate);
-  window.addEventListener("mousemove", ({ clientX, clientY }) => {
+  window.addEventListener("mousedown", ({ clientX, clientY }) => {
     mouse.x = clientX;
     mouse.y = clientY;
+    isMouseDown = true;
+  });
+  window.addEventListener("mouseup", () => {
+    isMouseDown = false;
+  });
+  window.addEventListener("mousemove", ({ clientX, clientY }) => {
+    if (isMouseDown) {
+      mouse.x = clientX;
+      mouse.y = clientY;
+    } else {
+      mouse.x = -9999;
+      mouse.y = -9999;
+    }
   });
 })();

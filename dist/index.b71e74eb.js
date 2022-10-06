@@ -525,46 +525,58 @@ var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl)
 var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
 var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
 var _glMatrix = require("gl-matrix");
+var _img0481Png = require("./IMG_0481.png");
+var _img0481PngDefault = parcelHelpers.interopDefault(_img0481Png);
 /// <reference types="@webgpu/types" />
 console.log("Hello world!");
+// TODO — Uniforms and texture on different bind group!
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
 // you have to pad a vec3 because of alignment
 const VERTEX_COUNT = 6;
-const ENTITIES_COUNT = 500000;
+const ENTITIES_COUNT = window.innerWidth * window.innerHeight;
 // const ENTITIES_COUNT = 2_000_000;
-const STRIDE = 8; // vec3 position + padding, vec3 velocity, float mass
+const STRIDE = 12; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
 const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 const canvas = document.querySelector("canvas");
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+canvas.width = window.innerWidth * window.devicePixelRatio;
+canvas.height = window.innerHeight * window.devicePixelRatio;
 let ctx;
 let presentationFormat;
 let device;
 let bufferA, bufferB, vertexDataBuffer;
 let bindGroupLayout, bindGroupA, bindGroupB;
-let uniformBuffer, uniformBindGroup;
+let uniformBuffer, uniformBindGroup, cubeTexture;
 let shaderModule, computePipeline;
 let renderPipeline;
 let renderPassDesc;
 let loops = 0;
 const mouse = {
-    x: window.innerWidth / 2,
-    y: window.innerHeight / 2
+    x: -9999,
+    y: -9999
 };
+let isMouseDown = false;
 let entityData = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
 for(let entity = 0; entity < ENTITIES_COUNT; entity++){
     const position = _glMatrix.vec3.fromValues(Math.random() * window.innerWidth, Math.random() * window.innerHeight, 0);
-    const velocity = _glMatrix.vec3.fromValues(Math.random() * 2 - 1, Math.random() * 2 - 1, 0);
-    _glMatrix.vec3.normalize(velocity, velocity);
-    _glMatrix.vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
-    entityData[entity * STRIDE + 0] = position[0]; // position.x
-    entityData[entity * STRIDE + 1] = position[1]; // position.y
-    entityData[entity * STRIDE + 2] = position[2]; // position.z
-    entityData[entity * STRIDE + 4] = velocity[0]; // velocity.x
-    entityData[entity * STRIDE + 5] = velocity[1]; // velocity.y
-    entityData[entity * STRIDE + 6] = velocity[2]; // velocity.z
-    entityData[entity * STRIDE + 7] = 0.5 + Math.random(); // mass
+    const x = entity % window.innerWidth;
+    const y = Math.floor(entity / window.innerWidth);
+    // const velocity = vec3.fromValues(
+    //   Math.random() * 2 - 1,
+    //   Math.random() * 2 - 1,
+    //   0
+    // );
+    // vec3.normalize(velocity, velocity);
+    // vec3.scale(velocity, velocity, 0.1 + Math.random() * 0.5);
+    entityData[entity * STRIDE + 0] = x; // position.x
+    entityData[entity * STRIDE + 1] = y; // position.y
+    entityData[entity * STRIDE + 2] = 0; // position.z
+    entityData[entity * STRIDE + 4] = 0; // velocity.x
+    entityData[entity * STRIDE + 5] = 0; // velocity.y
+    entityData[entity * STRIDE + 6] = 0; // velocity.z
+    entityData[entity * STRIDE + 8] = x / window.innerWidth; // uv.u
+    entityData[entity * STRIDE + 9] = y / window.innerWidth; // uv.v
+    entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
 }
 const setupCanvasCtx = ()=>{
     ctx = canvas.getContext("webgpu");
@@ -641,6 +653,10 @@ const createBuffers = ()=>{
 };
 const createBindGroups = ()=>{
     // A bind group layout defines the input/output interface expected by a shader
+    const sampler = device.createSampler({
+        magFilter: "linear",
+        minFilter: "linear"
+    });
     bindGroupLayout = device.createBindGroupLayout({
         entries: [
             {
@@ -662,6 +678,22 @@ const createBindGroups = ()=>{
                 visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
                 buffer: {
                     type: "uniform"
+                }
+            },
+            {
+                binding: 3,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+                sampler: {
+                    type: "filtering"
+                }
+            },
+            {
+                binding: 4,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+                texture: {
+                    sampleType: "float",
+                    multisampled: false,
+                    viewDimension: "2d"
                 }
             }, 
         ]
@@ -687,6 +719,14 @@ const createBindGroups = ()=>{
                 resource: {
                     buffer: uniformBuffer
                 }
+            },
+            {
+                binding: 3,
+                resource: sampler
+            },
+            {
+                binding: 4,
+                resource: cubeTexture.createView()
             }, 
         ]
     });
@@ -710,6 +750,14 @@ const createBindGroups = ()=>{
                 resource: {
                     buffer: uniformBuffer
                 }
+            },
+            {
+                binding: 3,
+                resource: sampler
+            },
+            {
+                binding: 4,
+                resource: cubeTexture.createView()
             }, 
         ]
     });
@@ -783,8 +831,20 @@ const createRenderPipeline = async ()=>{
         entryPoint: "fragment_main",
         targets: [
             {
-                format: presentationFormat
-            }
+                format: presentationFormat,
+                blend: {
+                    color: {
+                        operation: "add",
+                        srcFactor: "one",
+                        dstFactor: "one"
+                    },
+                    alpha: {
+                        operation: "add",
+                        srcFactor: "one",
+                        dstFactor: "one"
+                    }
+                }
+            }, 
         ]
     };
     const depthFormat = "depth24plus-stencil8";
@@ -816,9 +876,9 @@ const createRenderPipeline = async ()=>{
             {
                 view: ctx.getCurrentTexture().createView(),
                 clearValue: {
-                    r: 0.5,
-                    g: 0.5,
-                    b: 0.5,
+                    r: 0,
+                    g: 0,
+                    b: 0,
                     a: 1
                 },
                 loadOp: "clear",
@@ -870,6 +930,29 @@ const animate = ()=>{
     performance.clearMeasures();
     requestAnimationFrame(animate);
 };
+const loadTexture = async ()=>{
+    const img = document.createElement("img");
+    img.src = _img0481PngDefault.default;
+    await img.decode();
+    const imageBitmap = await createImageBitmap(img);
+    cubeTexture = device.createTexture({
+        size: [
+            imageBitmap.width,
+            imageBitmap.height,
+            1
+        ],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    device.queue.copyExternalImageToTexture({
+        source: imageBitmap
+    }, {
+        texture: cubeTexture
+    }, [
+        imageBitmap.width,
+        imageBitmap.height
+    ]);
+};
 (async ()=>{
     if (!navigator.gpu) {
         alert("WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags.");
@@ -877,19 +960,33 @@ const animate = ()=>{
     }
     // setupDOMRenderer();
     await requestWebGPU();
+    await loadTexture();
     setupCanvasCtx();
     createBuffers();
     createBindGroups();
     createComputePipeline();
     await createRenderPipeline();
     requestAnimationFrame(animate);
-    window.addEventListener("mousemove", ({ clientX , clientY  })=>{
+    window.addEventListener("mousedown", ({ clientX , clientY  })=>{
         mouse.x = clientX;
         mouse.y = clientY;
+        isMouseDown = true;
+    });
+    window.addEventListener("mouseup", ()=>{
+        isMouseDown = false;
+    });
+    window.addEventListener("mousemove", ({ clientX , clientY  })=>{
+        if (isMouseDown) {
+            mouse.x = clientX;
+            mouse.y = clientY;
+        } else {
+            mouse.x = -9999;
+            mouse.y = -9999;
+        }
     });
 })();
 
-},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","gl-matrix":"1mBhM","bundle-text:./draw-shader.wgsl":"l4wa9"}],"gkKU3":[function(require,module,exports) {
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","gl-matrix":"1mBhM","bundle-text:./draw-shader.wgsl":"l4wa9","./IMG_0481.png":"gkfcK"}],"gkKU3":[function(require,module,exports) {
 exports.interopDefault = function(a) {
     return a && a.__esModule ? a : {
         default: a
@@ -920,7 +1017,7 @@ exports.export = function(dest, destName, get) {
 };
 
 },{}],"4NDR6":[function(require,module,exports) {
-module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(1) var<storage, read_write> output : array<Body>;\n@group(0) @binding(2) var<uniform> uniforms : Uniforms;\n\n\nfn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {\n  let speed = length(velocity);\n\n  if (speed == 0.0) {\n    return vec3(0);\n  }\n\n  let speed_squared = speed * speed;\n  let direction = normalize(velocity) * -1;\n\n  return coefficient * speed_squared * direction;\n}\n\nfn apply_force(body: Body, acceleration: vec3<f32>, force: vec3<f32>) -> vec3<f32> {\n  return acceleration + (force / body.mass);\n}\n\nfn check_colissions(dst : ptr<function, Body>) {\n  (*dst).position = (*dst).position;\n  (*dst).velocity = (*dst).velocity;\n}\n\n@compute @workgroup_size(64)\nfn main(@builtin(global_invocation_id) global_id : vec3<u32>) {\n  const PI: f32 = 3.14159;\n\n  let radius: f32 = 1;\n  let mouse_radius: f32 = 200;\n  let gravity = vec3<f32>(0, 0, 0);\n  let wind = vec3<f32>(0, 0, 0);\n\n  let bodies_count = arrayLength(&output);\n  let body_index = global_id.x * (global_id.y + 1) * (global_id.z + 1);\n  \n  if(body_index >= bodies_count) {\n    return;\n  }\n\n  var prev_state = input[body_index];\n  let next_state = &output[body_index];\n\n  (*next_state) = prev_state;\n\n  var acceleration = vec3<f32>(0);\n\n\n  // var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  // var dist = length(position_to_mouse);\n  // if (dist < radius + mouse_radius) {\n  //   let overlap = radius + mouse_radius - dist;\n  //   (*next_state).position = (*next_state).position + normalize(position_to_mouse) * overlap;\n\n  //   var incidence = normalize(position_to_mouse);\n  //   var normal = cross(incidence, vec3<f32>(0, 0, 1));\n  //   (*next_state).velocity = reflect((*next_state).velocity,  normal) * 1.2;\n  // }\n\n  var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  var dist = length(position_to_mouse);\n  if (dist < mouse_radius) {\n    var repel_direction = normalize(position_to_mouse);\n    var repel_force = 1 - dist / mouse_radius;\n    repel_force = repel_force * repel_force;\n\n    acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);\n\n  }\n\n\n  \n  var weight : vec3<f32> = gravity * (*next_state).mass;\n  acceleration = apply_force((*next_state), acceleration, wind);\n  acceleration = apply_force((*next_state), acceleration, weight);\n\n  \n  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.01);\n  acceleration = apply_force((*next_state), acceleration, drag);\n\n  (*next_state).velocity = (*next_state).velocity + acceleration;\n  (*next_state).position = (*next_state).position + (*next_state).velocity;\n\n  // WALLS\n  // TOP\n  if ((*next_state).position.y < 0) {\n    (*next_state).position.y = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // BOTTOM\n  if ((*next_state).position.y > uniforms.u_resolution.y) {\n    (*next_state).position.y = uniforms.u_resolution.y;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // LEFT\n  if ((*next_state).position.x > uniforms.u_resolution.x) {\n    (*next_state).position.x = uniforms.u_resolution.x;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(-1, 0, 0));\n  }\n\n  // RIGHT\n  if ((*next_state).position.x < 0) {\n    (*next_state).position.x = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(1, 0, 0));\n  }\n}";
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(1) var<storage, read_write> output : array<Body>;\n@group(0) @binding(2) var<uniform> uniforms : Uniforms;\n\n\nfn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {\n  let speed = length(velocity);\n\n  if (speed == 0.0) {\n    return vec3(0);\n  }\n\n  let speed_squared = speed * speed;\n  let direction = normalize(velocity) * -1;\n\n  return coefficient * speed_squared * direction;\n}\n\nfn apply_force(body: Body, acceleration: vec3<f32>, force: vec3<f32>) -> vec3<f32> {\n  return acceleration + (force / body.mass);\n}\n\nfn check_colissions(dst : ptr<function, Body>) {\n  (*dst).position = (*dst).position;\n  (*dst).velocity = (*dst).velocity;\n}\n\n@compute @workgroup_size(64)\nfn main(@builtin(global_invocation_id) global_id : vec3<u32>) {\n  const PI: f32 = 3.14159;\n\n  let radius: f32 = 1;\n  let mouse_radius: f32 = 200;\n  let gravity = vec3<f32>(0, 0, 0);\n  let wind = vec3<f32>(0, 0, 0);\n\n  let bodies_count = arrayLength(&output);\n  let body_index = global_id.x * (global_id.y + 1) * (global_id.z + 1);\n  \n  if(body_index >= bodies_count) {\n    return;\n  }\n\n  var prev_state = input[body_index];\n  let next_state = &output[body_index];\n\n  (*next_state) = prev_state;\n\n  var acceleration = vec3<f32>(0);\n\n\n  // var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  // var dist = length(position_to_mouse);\n  // if (dist < radius + mouse_radius) {\n  //   let overlap = radius + mouse_radius - dist;\n  //   (*next_state).position = (*next_state).position + normalize(position_to_mouse) * overlap;\n\n  //   var incidence = normalize(position_to_mouse);\n  //   var normal = cross(incidence, vec3<f32>(0, 0, 1));\n  //   (*next_state).velocity = reflect((*next_state).velocity,  normal) * 1.2;\n  // }\n\n  var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  var dist = length(position_to_mouse);\n  if (dist < mouse_radius) {\n    var repel_direction = normalize(position_to_mouse);\n    var repel_force = 1 - dist / mouse_radius;\n    repel_force = repel_force * repel_force;\n\n    acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);\n  }\n\n\n  \n  var weight : vec3<f32> = gravity * (*next_state).mass;\n  acceleration = apply_force((*next_state), acceleration, wind);\n  acceleration = apply_force((*next_state), acceleration, weight);\n\n  \n  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.01);\n  acceleration = apply_force((*next_state), acceleration, drag);\n\n  (*next_state).velocity = (*next_state).velocity + acceleration;\n  (*next_state).position = (*next_state).position + (*next_state).velocity;\n  \n  // WALLS\n  // TOP\n  if ((*next_state).position.y < 0) {\n    (*next_state).position.y = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // BOTTOM\n  if ((*next_state).position.y > uniforms.u_resolution.y) {\n    (*next_state).position.y = uniforms.u_resolution.y;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // LEFT\n  if ((*next_state).position.x > uniforms.u_resolution.x) {\n    (*next_state).position.x = uniforms.u_resolution.x;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(-1, 0, 0));\n  }\n\n  // RIGHT\n  if ((*next_state).position.x < 0) {\n    (*next_state).position.x = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(1, 0, 0));\n  }\n}";
 
 },{}],"1mBhM":[function(require,module,exports) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
@@ -7295,7 +7392,45 @@ var forEach = function() {
 }();
 
 },{"./common.js":"lYeTq","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"l4wa9":[function(require,module,exports) {
-module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(2) var<uniform> uniforms : Uniforms;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 1;\n  var entity = input[instance_index];\n\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0.0, 1.0);\n  // output.uv = vert.uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n  return vec4<f32>(1.0);\n}";
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(2) var<uniform> uniforms : Uniforms;\n@group(0) @binding(3) var mySampler: sampler;\n@group(0) @binding(4) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
+
+},{}],"gkfcK":[function(require,module,exports) {
+module.exports = require('./helpers/bundle-url').getBundleURL('7UhFu') + "IMG_0481.12df7d47.png" + "?" + Date.now();
+
+},{"./helpers/bundle-url":"lgJ39"}],"lgJ39":[function(require,module,exports) {
+"use strict";
+var bundleURL = {
+};
+function getBundleURLCached(id) {
+    var value = bundleURL[id];
+    if (!value) {
+        value = getBundleURL();
+        bundleURL[id] = value;
+    }
+    return value;
+}
+function getBundleURL() {
+    try {
+        throw new Error();
+    } catch (err) {
+        var matches = ('' + err.stack).match(/(https?|file|ftp):\/\/[^)\n]+/g);
+        if (matches) // The first two stack frames will be this function and getBundleURLCached.
+        // Use the 3rd one, which will be a runtime in the original bundle.
+        return getBaseURL(matches[2]);
+    }
+    return '/';
+}
+function getBaseURL(url) {
+    return ('' + url).replace(/^((?:https?|file|ftp):\/\/.+)\/[^/]+$/, '$1') + '/';
+} // TODO: Replace uses with `new URL(url).origin` when ie11 is no longer supported.
+function getOrigin(url) {
+    var matches = ('' + url).match(/(https?|file|ftp):\/\/[^/]+/);
+    if (!matches) throw new Error('Origin not found');
+    return matches[0];
+}
+exports.getBundleURL = getBundleURLCached;
+exports.getBaseURL = getBaseURL;
+exports.getOrigin = getOrigin;
 
 },{}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
 

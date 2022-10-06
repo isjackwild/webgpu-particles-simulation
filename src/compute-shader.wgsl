@@ -1,6 +1,7 @@
 struct Body {
   position: vec3<f32>,
   velocity: vec3<f32>,
+  texture_uv: vec2<f32>,
   mass: f32,
 }
 
@@ -79,7 +80,6 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
     repel_force = repel_force * repel_force;
 
     acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);
-
   }
 
 
@@ -94,7 +94,7 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
 
   (*next_state).velocity = (*next_state).velocity + acceleration;
   (*next_state).position = (*next_state).position + (*next_state).velocity;
-
+  
   // WALLS
   // TOP
   if ((*next_state).position.y < 0) {
