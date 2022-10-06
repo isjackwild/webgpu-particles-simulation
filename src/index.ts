@@ -1,10 +1,12 @@
 /// <reference types="@webgpu/types" />
 
 import computeShader from "bundle-text:./compute-shader.wgsl";
-import drawShader from "bundle-text:./draw-shader.wgsl";
 import imgSrc from "./maps/IMG_0481.png";
 import ParticlesRenderable from "./ParticlesRenderable";
+import SimulationComputable from "./SimulationComputable";
+import { requestWebGPU } from "./utils";
 import TextureLoader from "./utils/TextureLoader";
+import WebGPUCompute from "./WebGPUCompute";
 import WebGPURenderer from "./WebGPURenderer";
 
 // TODO — Uniforms and texture on different bind group!
@@ -13,7 +15,6 @@ import WebGPURenderer from "./WebGPURenderer";
 // https://surma.dev/things/webgpu/
 
 // you have to pad a vec3 because of alignment
-const VERTEX_COUNT = 6;
 const ENTITIES_COUNT = window.innerWidth * window.innerHeight;
 // const ENTITIES_COUNT = 2_000_000;
 const STRIDE = 4 + 4 + 2 + 2; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
@@ -26,18 +27,17 @@ canvas.height = window.innerHeight * window.devicePixelRatio;
 let renderer: WebGPURenderer;
 let particlesRenderable: ParticlesRenderable;
 
+let computer: WebGPUCompute;
+let simulationComputable: SimulationComputable;
+
 let device: GPUDevice;
-let simulationBufferA, simulationBufferB, vertexDataBuffer;
+let simulationBufferA, simulationBufferB;
 
 let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
 let uniformBuffer,
   uniformsBindGroupLayout,
   uniformsBindGroup,
   texture: GPUTexture;
-
-let shaderModule, computePipeline;
-let renderPipeline;
-let renderPassDesc: GPURenderPassDescriptor;
 
 let loops = 0;
 
@@ -62,17 +62,6 @@ for (let entity = 0; entity < ENTITIES_COUNT; entity++) {
   entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
 }
 
-const requestWebGPU = async () => {
-  if (device) return device;
-
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) {
-    console.warn("Could not access Adapter");
-    return;
-  }
-  return await adapter.requestDevice();
-};
-
 const createBuffers = () => {
   simulationBufferA = device.createBuffer({
     size: BUFFER_SIZE,
@@ -86,23 +75,6 @@ const createBuffers = () => {
     size: BUFFER_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-
-  vertexDataBuffer = device.createBuffer({
-    size: VERTEX_COUNT * 2 * 2 * Float32Array.BYTES_PER_ELEMENT,
-    usage: GPUBufferUsage.VERTEX,
-    mappedAtCreation: true,
-  });
-  // prettier-ignore
-  new Float32Array(vertexDataBuffer.getMappedRange()).set([
-    1, 1,     1, 0, //position, uv
-    1, -1,    1, 1, 
-    -1, -1,   0, 1, 
-
-    1, 1,     1, 0, 
-    -1, -1,   0, 1, 
-    -1, 1,    0, 0,
-  ]);
-  vertexDataBuffer.unmap();
 
   const uniformBufferSize =
     1 * 2 * Float32Array.BYTES_PER_ELEMENT +
@@ -210,173 +182,6 @@ const createBindGroups = () => {
   });
 };
 
-const createComputePipeline = () => {
-  shaderModule = device.createShaderModule({
-    code: computeShader,
-  });
-
-  computePipeline = device.createComputePipeline({
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [simulationBindGroupLayout, uniformsBindGroupLayout],
-    }),
-    compute: {
-      module: shaderModule,
-      entryPoint: "main",
-    },
-  });
-};
-
-const createComputeCommands = (activeSimulationBindGroup) => {
-  const commandEncoder = device.createCommandEncoder();
-  const computePass = commandEncoder.beginComputePass();
-  computePass.setPipeline(computePipeline);
-  computePass.setBindGroup(0, activeSimulationBindGroup);
-  computePass.setBindGroup(1, uniformsBindGroup);
-
-  computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 64));
-  computePass.end();
-
-  return commandEncoder.finish();
-};
-
-const compute = () => {
-  performance.mark("compute.start");
-
-  device.queue.submit([
-    createComputeCommands(
-      loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB
-    ),
-  ]);
-
-  performance.mark("compute.end");
-  // console.log(
-  //   "COMPUTE",
-  //   performance.measure("compute.duration", "compute.start", "compute.end")
-  //     .duration
-  // );
-};
-
-const createRenderPipeline = async () => {
-  // Setup shader modules
-  const shaderModule = device.createShaderModule({ code: drawShader });
-  await shaderModule.compilationInfo();
-
-  const vertexState: GPURenderPipelineDescriptor["vertex"] = {
-    module: shaderModule,
-    entryPoint: "vertex_main",
-    buffers: [
-      {
-        arrayStride: 2 * 2 * 4, // 2 attributes of 2 elements, each float32 (takes up 4 bytes)
-        attributes: [
-          {
-            format: "float32x2" as GPUVertexFormat,
-            offset: 0,
-            shaderLocation: 0,
-          },
-          {
-            format: "float32x2" as GPUVertexFormat,
-            offset: 2 * 4,
-            shaderLocation: 1,
-          },
-        ],
-      },
-    ],
-  };
-
-  const fragmentState: GPUFragmentState = {
-    module: shaderModule,
-    entryPoint: "fragment_main",
-    targets: [
-      {
-        format: renderer.presentationFormat,
-        blend: {
-          color: {
-            operation: "add",
-            srcFactor: "one",
-            dstFactor: "one",
-          },
-          alpha: {
-            operation: "add",
-            srcFactor: "one",
-            dstFactor: "one",
-          },
-        },
-      },
-    ],
-  };
-
-  const depthFormat = "depth24plus-stencil8";
-  const depthTexture = device.createTexture({
-    size: {
-      width: canvas.width,
-      height: canvas.height,
-      depthOrArrayLayers: 1,
-    },
-    format: depthFormat,
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-
-  renderPipeline = device.createRenderPipeline({
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [simulationBindGroupLayout, uniformsBindGroupLayout],
-    }),
-    vertex: vertexState,
-    fragment: fragmentState,
-    depthStencil: {
-      format: depthFormat,
-      depthWriteEnabled: true,
-      depthCompare: "less",
-    },
-  });
-
-  renderPassDesc = {
-    colorAttachments: [
-      {
-        view: renderer.ctx.getCurrentTexture().createView(), // Assigned later
-        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
-        loadOp: "clear",
-        storeOp: "store",
-      },
-    ],
-    depthStencilAttachment: {
-      view: depthTexture.createView(),
-      depthClearValue: 1.0,
-      depthLoadOp: "clear",
-      depthStoreOp: "store",
-      stencilLoadOp: "clear",
-      stencilStoreOp: "store",
-    },
-  };
-};
-
-const render = () => {
-  performance.mark("render.start");
-  renderPassDesc.colorAttachments[0].view = renderer.ctx
-    .getCurrentTexture()
-    .createView();
-
-  const commandEncoder = device.createCommandEncoder();
-  const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
-
-  renderPass.setPipeline(renderPipeline);
-  renderPass.setBindGroup(
-    0,
-    loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA
-  );
-  renderPass.setBindGroup(1, uniformsBindGroup);
-  renderPass.setVertexBuffer(0, vertexDataBuffer);
-  renderPass.draw(VERTEX_COUNT, ENTITIES_COUNT, 0, 0);
-  renderPass.end();
-
-  device.queue.submit([commandEncoder.finish()]);
-  performance.mark("render.end");
-  // console.log(
-  //   "RENDER",
-  //   performance.measure("render.duration", "render.start", "render.end")
-  //     .duration
-  // );
-};
-
 const animate = () => {
   const uniformsArray = new Float32Array([
     window.innerWidth,
@@ -386,8 +191,14 @@ const animate = () => {
   ]);
   device.queue.writeBuffer(uniformBuffer, 0, uniformsArray);
 
-  compute();
-  render();
+  simulationComputable.simulationSrcBindGroup =
+    loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB;
+  computer.compute();
+
+  particlesRenderable.simulationSrcBindGroup =
+    loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA;
+  renderer.render();
+
   loops++;
   performance.clearMarks();
   performance.clearMeasures();
@@ -404,10 +215,19 @@ const animate = () => {
 
   device = (await requestWebGPU()) as GPUDevice;
   renderer = new WebGPURenderer(device, canvas);
+  computer = new WebGPUCompute(device);
   texture = await new TextureLoader(device).loadTextureFromImageSrc(imgSrc);
   createBuffers();
   createBindGroups();
-  createComputePipeline();
+  simulationComputable = new SimulationComputable(
+    device,
+    ENTITIES_COUNT,
+    uniformsBindGroupLayout,
+    uniformsBindGroup,
+    simulationBindGroupLayout
+  );
+  computer.addComputable(simulationComputable);
+
   particlesRenderable = new ParticlesRenderable(
     device,
     renderer,
@@ -416,7 +236,7 @@ const animate = () => {
     uniformsBindGroup,
     simulationBindGroupLayout
   );
-  await createRenderPipeline();
+  renderer.addRenderable(particlesRenderable);
 
   requestAnimationFrame(animate);
   window.addEventListener("mousedown", ({ clientX, clientY }) => {

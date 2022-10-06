@@ -520,24 +520,23 @@ function hmrAcceptRun(bundle, id) {
 
 },{}],"h7u1C":[function(require,module,exports) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
-/// <reference types="@webgpu/types" />
-var _computeShaderWgsl = require("bundle-text:./compute-shader.wgsl");
-var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl);
-var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
-var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
 var _img0481Png = require("./maps/IMG_0481.png");
 var _img0481PngDefault = parcelHelpers.interopDefault(_img0481Png);
 var _particlesRenderable = require("./ParticlesRenderable");
 var _particlesRenderableDefault = parcelHelpers.interopDefault(_particlesRenderable);
+var _simulationComputable = require("./SimulationComputable");
+var _simulationComputableDefault = parcelHelpers.interopDefault(_simulationComputable);
+var _utils = require("./utils");
 var _textureLoader = require("./utils/TextureLoader");
 var _textureLoaderDefault = parcelHelpers.interopDefault(_textureLoader);
+var _webGPUCompute = require("./WebGPUCompute");
+var _webGPUComputeDefault = parcelHelpers.interopDefault(_webGPUCompute);
 var _webGPURenderer = require("./WebGPURenderer");
 var _webGPURendererDefault = parcelHelpers.interopDefault(_webGPURenderer);
 // TODO — Uniforms and texture on different bind group!
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
 // you have to pad a vec3 because of alignment
-const VERTEX_COUNT = 6;
 const ENTITIES_COUNT = window.innerWidth * window.innerHeight;
 // const ENTITIES_COUNT = 2_000_000;
 const STRIDE = 12; // vec3 position + padding, vec3 velocity + padding, vec3 color, float mass + padding
@@ -547,13 +546,12 @@ canvas.width = window.innerWidth * window.devicePixelRatio;
 canvas.height = window.innerHeight * window.devicePixelRatio;
 let renderer;
 let particlesRenderable;
+let computer;
+let simulationComputable;
 let device;
-let simulationBufferA, simulationBufferB, vertexDataBuffer;
+let simulationBufferA, simulationBufferB;
 let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
 let uniformBuffer, uniformsBindGroupLayout, uniformsBindGroup, texture;
-let shaderModule, computePipeline;
-let renderPipeline;
-let renderPassDesc;
 let loops = 0;
 const mouse = {
     x: -9999,
@@ -574,15 +572,6 @@ for(let entity = 0; entity < ENTITIES_COUNT; entity++){
     entityData[entity * STRIDE + 9] = y / window.innerHeight; // uv.v
     entityData[entity * STRIDE + 10] = 0.5 + Math.random(); // mass
 }
-const requestWebGPU = async ()=>{
-    if (device) return device;
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-        console.warn("Could not access Adapter");
-        return;
-    }
-    return await adapter.requestDevice();
-};
 const createBuffers = ()=>{
     simulationBufferA = device.createBuffer({
         size: BUFFER_SIZE,
@@ -597,39 +586,6 @@ const createBuffers = ()=>{
         size: BUFFER_SIZE,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
     });
-    vertexDataBuffer = device.createBuffer({
-        size: VERTEX_COUNT * 4 * Float32Array.BYTES_PER_ELEMENT,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true
-    });
-    // prettier-ignore
-    new Float32Array(vertexDataBuffer.getMappedRange()).set([
-        1,
-        1,
-        1,
-        0,
-        1,
-        -1,
-        1,
-        1,
-        -1,
-        -1,
-        0,
-        1,
-        1,
-        1,
-        1,
-        0,
-        -1,
-        -1,
-        0,
-        1,
-        -1,
-        1,
-        0,
-        0, 
-    ]);
-    vertexDataBuffer.unmap();
     const uniformBufferSize = 2 * Float32Array.BYTES_PER_ELEMENT + 2 * Float32Array.BYTES_PER_ELEMENT; // resolution, mouse
     uniformBuffer = device.createBuffer({
         size: uniformBufferSize,
@@ -742,163 +698,6 @@ const createBindGroups = ()=>{
         ]
     });
 };
-const createComputePipeline = ()=>{
-    shaderModule = device.createShaderModule({
-        code: _computeShaderWgslDefault.default
-    });
-    computePipeline = device.createComputePipeline({
-        layout: device.createPipelineLayout({
-            bindGroupLayouts: [
-                simulationBindGroupLayout,
-                uniformsBindGroupLayout
-            ]
-        }),
-        compute: {
-            module: shaderModule,
-            entryPoint: "main"
-        }
-    });
-};
-const createComputeCommands = (activeSimulationBindGroup)=>{
-    const commandEncoder = device.createCommandEncoder();
-    const computePass = commandEncoder.beginComputePass();
-    computePass.setPipeline(computePipeline);
-    computePass.setBindGroup(0, activeSimulationBindGroup);
-    computePass.setBindGroup(1, uniformsBindGroup);
-    computePass.dispatchWorkgroups(Math.ceil(ENTITIES_COUNT / 64));
-    computePass.end();
-    return commandEncoder.finish();
-};
-const compute = ()=>{
-    performance.mark("compute.start");
-    device.queue.submit([
-        createComputeCommands(loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB), 
-    ]);
-    performance.mark("compute.end");
-// console.log(
-//   "COMPUTE",
-//   performance.measure("compute.duration", "compute.start", "compute.end")
-//     .duration
-// );
-};
-const createRenderPipeline = async ()=>{
-    // Setup shader modules
-    const shaderModule1 = device.createShaderModule({
-        code: _drawShaderWgslDefault.default
-    });
-    await shaderModule1.compilationInfo();
-    const vertexState = {
-        module: shaderModule1,
-        entryPoint: "vertex_main",
-        buffers: [
-            {
-                arrayStride: 16,
-                attributes: [
-                    {
-                        format: "float32x2",
-                        offset: 0,
-                        shaderLocation: 0
-                    },
-                    {
-                        format: "float32x2",
-                        offset: 8,
-                        shaderLocation: 1
-                    }, 
-                ]
-            }, 
-        ]
-    };
-    const fragmentState = {
-        module: shaderModule1,
-        entryPoint: "fragment_main",
-        targets: [
-            {
-                format: renderer.presentationFormat,
-                blend: {
-                    color: {
-                        operation: "add",
-                        srcFactor: "one",
-                        dstFactor: "one"
-                    },
-                    alpha: {
-                        operation: "add",
-                        srcFactor: "one",
-                        dstFactor: "one"
-                    }
-                }
-            }, 
-        ]
-    };
-    const depthFormat = "depth24plus-stencil8";
-    const depthTexture = device.createTexture({
-        size: {
-            width: canvas.width,
-            height: canvas.height,
-            depthOrArrayLayers: 1
-        },
-        format: depthFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT
-    });
-    renderPipeline = device.createRenderPipeline({
-        layout: device.createPipelineLayout({
-            bindGroupLayouts: [
-                simulationBindGroupLayout,
-                uniformsBindGroupLayout
-            ]
-        }),
-        vertex: vertexState,
-        fragment: fragmentState,
-        depthStencil: {
-            format: depthFormat,
-            depthWriteEnabled: true,
-            depthCompare: "less"
-        }
-    });
-    renderPassDesc = {
-        colorAttachments: [
-            {
-                view: renderer.ctx.getCurrentTexture().createView(),
-                clearValue: {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 1
-                },
-                loadOp: "clear",
-                storeOp: "store"
-            }, 
-        ],
-        depthStencilAttachment: {
-            view: depthTexture.createView(),
-            depthClearValue: 1,
-            depthLoadOp: "clear",
-            depthStoreOp: "store",
-            stencilLoadOp: "clear",
-            stencilStoreOp: "store"
-        }
-    };
-};
-const render = ()=>{
-    performance.mark("render.start");
-    renderPassDesc.colorAttachments[0].view = renderer.ctx.getCurrentTexture().createView();
-    const commandEncoder = device.createCommandEncoder();
-    const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
-    renderPass.setPipeline(renderPipeline);
-    renderPass.setBindGroup(0, loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA);
-    renderPass.setBindGroup(1, uniformsBindGroup);
-    renderPass.setVertexBuffer(0, vertexDataBuffer);
-    renderPass.draw(VERTEX_COUNT, ENTITIES_COUNT, 0, 0);
-    renderPass.end();
-    device.queue.submit([
-        commandEncoder.finish()
-    ]);
-    performance.mark("render.end");
-// console.log(
-//   "RENDER",
-//   performance.measure("render.duration", "render.start", "render.end")
-//     .duration
-// );
-};
 const animate = ()=>{
     const uniformsArray = new Float32Array([
         window.innerWidth,
@@ -907,8 +706,10 @@ const animate = ()=>{
         mouse.y, 
     ]);
     device.queue.writeBuffer(uniformBuffer, 0, uniformsArray);
-    compute();
-    render();
+    simulationComputable.simulationSrcBindGroup = loops % 2 === 0 ? simulationBindGroupA : simulationBindGroupB;
+    computer.compute();
+    particlesRenderable.simulationSrcBindGroup = loops % 2 === 0 ? simulationBindGroupB : simulationBindGroupA;
+    renderer.render();
     loops++;
     performance.clearMarks();
     performance.clearMeasures();
@@ -919,14 +720,16 @@ const animate = ()=>{
         alert("WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags.");
         return;
     }
-    device = await requestWebGPU();
+    device = await _utils.requestWebGPU();
     renderer = new _webGPURendererDefault.default(device, canvas);
+    computer = new _webGPUComputeDefault.default(device);
     texture = await new _textureLoaderDefault.default(device).loadTextureFromImageSrc(_img0481PngDefault.default);
     createBuffers();
     createBindGroups();
-    createComputePipeline();
+    simulationComputable = new _simulationComputableDefault.default(device, ENTITIES_COUNT, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout);
+    computer.addComputable(simulationComputable);
     particlesRenderable = new _particlesRenderableDefault.default(device, renderer, ENTITIES_COUNT, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout);
-    await createRenderPipeline();
+    renderer.addRenderable(particlesRenderable);
     requestAnimationFrame(animate);
     window.addEventListener("mousedown", ({ clientX , clientY  })=>{
         mouse.x = clientX;
@@ -947,7 +750,7 @@ const animate = ()=>{
     });
 })();
 
-},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","bundle-text:./draw-shader.wgsl":"l4wa9","./maps/IMG_0481.png":"lQSka","./utils/TextureLoader":"blQVX","./WebGPURenderer":"4h10T","./ParticlesRenderable":"bQ6X1"}],"gkKU3":[function(require,module,exports) {
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","./maps/IMG_0481.png":"lQSka","./utils/TextureLoader":"blQVX","./WebGPURenderer":"4h10T","./ParticlesRenderable":"bQ6X1","./utils":"6Mk9B","./WebGPUCompute":"kANNZ","./SimulationComputable":"kB5ri"}],"gkKU3":[function(require,module,exports) {
 exports.interopDefault = function(a) {
     return a && a.__esModule ? a : {
         default: a
@@ -976,12 +779,6 @@ exports.export = function(dest, destName, get) {
         get: get
     });
 };
-
-},{}],"4NDR6":[function(require,module,exports) {
-module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(1) var<storage, read_write> output : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n\n\nfn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {\n  let speed = length(velocity);\n\n  if (speed == 0.0) {\n    return vec3(0);\n  }\n\n  let speed_squared = speed * speed;\n  let direction = normalize(velocity) * -1;\n\n  return coefficient * speed_squared * direction;\n}\n\nfn apply_force(body: Body, acceleration: vec3<f32>, force: vec3<f32>) -> vec3<f32> {\n  return acceleration + (force / body.mass);\n}\n\nfn check_colissions(dst : ptr<function, Body>) {\n  (*dst).position = (*dst).position;\n  (*dst).velocity = (*dst).velocity;\n}\n\n@compute @workgroup_size(64)\nfn main(@builtin(global_invocation_id) global_id : vec3<u32>) {\n  const PI: f32 = 3.14159;\n\n  let radius: f32 = 1;\n  let mouse_radius: f32 = 200;\n  let gravity = vec3<f32>(0, 0, 0);\n  let wind = vec3<f32>(0, 0, 0);\n\n  let bodies_count = arrayLength(&output);\n  let body_index = global_id.x * (global_id.y + 1) * (global_id.z + 1);\n  \n  if(body_index >= bodies_count) {\n    return;\n  }\n\n  var prev_state = input[body_index];\n  let next_state = &output[body_index];\n\n  (*next_state) = prev_state;\n\n  var acceleration = vec3<f32>(0);\n\n\n  // var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  // var dist = length(position_to_mouse);\n  // if (dist < radius + mouse_radius) {\n  //   let overlap = radius + mouse_radius - dist;\n  //   (*next_state).position = (*next_state).position + normalize(position_to_mouse) * overlap;\n\n  //   var incidence = normalize(position_to_mouse);\n  //   var normal = cross(incidence, vec3<f32>(0, 0, 1));\n  //   (*next_state).velocity = reflect((*next_state).velocity,  normal) * 1.2;\n  // }\n\n  var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  var dist = length(position_to_mouse);\n  if (dist < mouse_radius) {\n    var repel_direction = normalize(position_to_mouse);\n    var repel_force = 1 - dist / mouse_radius;\n    repel_force = repel_force * repel_force;\n\n    acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);\n  }\n\n\n  \n  var weight : vec3<f32> = gravity * (*next_state).mass;\n  acceleration = apply_force((*next_state), acceleration, wind);\n  acceleration = apply_force((*next_state), acceleration, weight);\n\n  \n  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.01);\n  acceleration = apply_force((*next_state), acceleration, drag);\n\n  (*next_state).velocity = (*next_state).velocity + acceleration;\n  (*next_state).position = (*next_state).position + (*next_state).velocity;\n  \n  // WALLS\n  // TOP\n  if ((*next_state).position.y < 0) {\n    (*next_state).position.y = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // BOTTOM\n  if ((*next_state).position.y > uniforms.u_resolution.y) {\n    (*next_state).position.y = uniforms.u_resolution.y;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // LEFT\n  if ((*next_state).position.x > uniforms.u_resolution.x) {\n    (*next_state).position.x = uniforms.u_resolution.x;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(-1, 0, 0));\n  }\n\n  // RIGHT\n  if ((*next_state).position.x < 0) {\n    (*next_state).position.x = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(1, 0, 0));\n  }\n}";
-
-},{}],"l4wa9":[function(require,module,exports) {
-module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(1) @binding(1) var mySampler: sampler;\n@group(1) @binding(2) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
 
 },{}],"lQSka":[function(require,module,exports) {
 module.exports = require('./helpers/bundle-url').getBundleURL('7UhFu') + "IMG_0481.a316e6c7.png" + "?" + Date.now();
@@ -1117,8 +914,12 @@ class WebGPURenderer {
     }
     render() {
         this.renderPassDescriptor.colorAttachments[0].view = this.ctx.getCurrentTexture().createView();
-        this.device.queue.submit(Array.from(this.renderables).map((renderable)=>renderable.getCommands(this.renderPassDescriptor)
-        ));
+        for (const renderable of this.renderables){
+            const commands = renderable.getCommands(this.renderPassDescriptor);
+            if (commands) this.device.queue.submit([
+                commands
+            ]);
+        }
     }
 }
 exports.default = WebGPURenderer;
@@ -1128,25 +929,11 @@ var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
 parcelHelpers.defineInteropFlag(exports);
 var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
 var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
-const VERTEX_COUNT = 6;
-class ParticlesRenderable {
-    constructor(device, renderer, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
-        this.device = device;
-        this.renderer = renderer;
-        this.particlesCount = particlesCount;
-        this.uniformsBindGroupLayout = uniformsBindGroupLayout;
-        this.uniformsBindGroup = uniformsBindGroup;
-        this.simulationBindGroupLayout = simulationBindGroupLayout;
-        this.createVertexBuffer();
-        this.createPipeline();
-    }
-    createVertexBuffer() {
-        this.vertexBuffer = this.device.createBuffer({
-            size: VERTEX_COUNT * 4 * Float32Array.BYTES_PER_ELEMENT,
-            usage: GPUBufferUsage.VERTEX,
-            mappedAtCreation: true
-        });
-        new Float32Array(this.vertexBuffer.getMappedRange()).set([
+const createQuad = ()=>{
+    return {
+        vertexCount: 6,
+        bufferSize: 24 * Float32Array.BYTES_PER_ELEMENT,
+        bufferData: [
             1,
             1,
             1,
@@ -1171,7 +958,29 @@ class ParticlesRenderable {
             1,
             0,
             0, 
-        ]);
+        ]
+    };
+};
+class ParticlesRenderable {
+    constructor(device, renderer, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
+        this.device = device;
+        this.renderer = renderer;
+        this.particlesCount = particlesCount;
+        this.uniformsBindGroupLayout = uniformsBindGroupLayout;
+        this.uniformsBindGroup = uniformsBindGroup;
+        this.simulationBindGroupLayout = simulationBindGroupLayout;
+        this.createVertexBuffer();
+        this.createPipeline();
+    }
+    createVertexBuffer() {
+        const { vertexCount , bufferSize , bufferData  } = createQuad();
+        this.vertexCount = vertexCount;
+        this.vertexBuffer = this.device.createBuffer({
+            size: bufferSize,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true
+        });
+        new Float32Array(this.vertexBuffer.getMappedRange()).set(bufferData);
         this.vertexBuffer.unmap();
     }
     createPipeline() {
@@ -1251,7 +1060,7 @@ class ParticlesRenderable {
         renderPass.setBindGroup(0, this.simulationSrcBindGroup);
         renderPass.setBindGroup(1, this.uniformsBindGroup);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
-        renderPass.draw(VERTEX_COUNT, this.particlesCount, 0, 0);
+        renderPass.draw(this.vertexCount, this.particlesCount, 0, 0);
         renderPass.end();
         return commandEncoder.finish();
     }
@@ -1260,6 +1069,102 @@ exports.default = ParticlesRenderable;
 
 },{"bundle-text:./draw-shader.wgsl":"6HAGK","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"6HAGK":[function(require,module,exports) {
 module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(1) @binding(1) var mySampler: sampler;\n@group(1) @binding(2) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
+
+},{}],"6Mk9B":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+parcelHelpers.export(exports, "requestWebGPU", ()=>requestWebGPU
+);
+let device;
+const requestWebGPU = async ()=>{
+    if (device) return device;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+        console.warn("Could not access Adapter");
+        return;
+    }
+    return await adapter.requestDevice();
+};
+
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"kANNZ":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+class WebGPUCompute {
+    constructor(device){
+        this.device = device;
+        this.computables = new Set();
+    }
+    addComputable(renderable) {
+        this.computables.add(renderable);
+    }
+    removeRenderable(renderable) {
+        this.computables.delete(renderable);
+    }
+    compute() {
+        for (const computable of this.computables){
+            const commands = computable.getCommands();
+            if (commands) this.device.queue.submit([
+                commands
+            ]);
+        }
+    }
+}
+exports.default = WebGPUCompute;
+
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"kB5ri":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+var _computeShaderWgsl = require("bundle-text:./compute-shader.wgsl");
+var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl);
+class SimulationComputable {
+    constructor(device, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
+        this.device = device;
+        this.particlesCount = particlesCount;
+        this.uniformsBindGroupLayout = uniformsBindGroupLayout;
+        this.uniformsBindGroup = uniformsBindGroup;
+        this.simulationBindGroupLayout = simulationBindGroupLayout;
+        this.createPipeline();
+    }
+    createPipeline() {
+        const shaderModule = this.device.createShaderModule({
+            code: _computeShaderWgslDefault.default
+        });
+        const bindGroupLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [
+                this.simulationBindGroupLayout,
+                this.uniformsBindGroupLayout, 
+            ]
+        });
+        this.pipeline = this.device.createComputePipeline({
+            layout: bindGroupLayout,
+            compute: {
+                module: shaderModule,
+                entryPoint: "main"
+            }
+        });
+    }
+    set simulationSrcBindGroup(group) {
+        this.simulationBindGroup = group;
+    }
+    get simulationSrcBindGroup() {
+        return this.simulationBindGroup;
+    }
+    getCommands() {
+        if (!this.simulationSrcBindGroup) return;
+        const commandEncoder = this.device.createCommandEncoder();
+        const computePass = commandEncoder.beginComputePass();
+        computePass.setPipeline(this.pipeline);
+        computePass.setBindGroup(0, this.simulationSrcBindGroup);
+        computePass.setBindGroup(1, this.uniformsBindGroup);
+        computePass.dispatchWorkgroups(Math.ceil(this.particlesCount / 64));
+        computePass.end();
+        return commandEncoder.finish();
+    }
+}
+exports.default = SimulationComputable;
+
+},{"bundle-text:./compute-shader.wgsl":"kiC0K","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"kiC0K":[function(require,module,exports) {
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(0) @binding(1) var<storage, read_write> output : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n\n\nfn calculate_drag(velocity: vec3<f32>, coefficient: f32) -> vec3<f32> {\n  let speed = length(velocity);\n\n  if (speed == 0.0) {\n    return vec3(0);\n  }\n\n  let speed_squared = speed * speed;\n  let direction = normalize(velocity) * -1;\n\n  return coefficient * speed_squared * direction;\n}\n\nfn apply_force(body: Body, acceleration: vec3<f32>, force: vec3<f32>) -> vec3<f32> {\n  return acceleration + (force / body.mass);\n}\n\nfn check_colissions(dst : ptr<function, Body>) {\n  (*dst).position = (*dst).position;\n  (*dst).velocity = (*dst).velocity;\n}\n\n@compute @workgroup_size(64)\nfn main(@builtin(global_invocation_id) global_id : vec3<u32>) {\n  const PI: f32 = 3.14159;\n\n  let radius: f32 = 1;\n  let mouse_radius: f32 = 200;\n  let gravity = vec3<f32>(0, 0, 0);\n  let wind = vec3<f32>(0, 0, 0);\n\n  let bodies_count = arrayLength(&output);\n  let body_index = global_id.x * (global_id.y + 1) * (global_id.z + 1);\n  \n  if(body_index >= bodies_count) {\n    return;\n  }\n\n  var prev_state = input[body_index];\n  let next_state = &output[body_index];\n\n  (*next_state) = prev_state;\n\n  var acceleration = vec3<f32>(0);\n\n\n  // var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  // var dist = length(position_to_mouse);\n  // if (dist < radius + mouse_radius) {\n  //   let overlap = radius + mouse_radius - dist;\n  //   (*next_state).position = (*next_state).position + normalize(position_to_mouse) * overlap;\n\n  //   var incidence = normalize(position_to_mouse);\n  //   var normal = cross(incidence, vec3<f32>(0, 0, 1));\n  //   (*next_state).velocity = reflect((*next_state).velocity,  normal) * 1.2;\n  // }\n\n  var position_to_mouse: vec3<f32> = (*next_state).position - vec3<f32>(uniforms.u_mouse, 0.0);\n  var dist = length(position_to_mouse);\n  if (dist < mouse_radius) {\n    var repel_direction = normalize(position_to_mouse);\n    var repel_force = 1 - dist / mouse_radius;\n    repel_force = repel_force * repel_force;\n\n    acceleration = apply_force((*next_state), acceleration, repel_direction * repel_force);\n  }\n\n\n  \n  var weight : vec3<f32> = gravity * (*next_state).mass;\n  acceleration = apply_force((*next_state), acceleration, wind);\n  acceleration = apply_force((*next_state), acceleration, weight);\n\n  \n  var drag : vec3<f32> = calculate_drag((*next_state).velocity + acceleration, 0.01);\n  acceleration = apply_force((*next_state), acceleration, drag);\n\n  (*next_state).velocity = (*next_state).velocity + acceleration;\n  (*next_state).position = (*next_state).position + (*next_state).velocity;\n  \n  // WALLS\n  // TOP\n  if ((*next_state).position.y < 0) {\n    (*next_state).position.y = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // BOTTOM\n  if ((*next_state).position.y > uniforms.u_resolution.y) {\n    (*next_state).position.y = uniforms.u_resolution.y;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(0, 1, 0));\n  }\n\n  // LEFT\n  if ((*next_state).position.x > uniforms.u_resolution.x) {\n    (*next_state).position.x = uniforms.u_resolution.x;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(-1, 0, 0));\n  }\n\n  // RIGHT\n  if ((*next_state).position.x < 0) {\n    (*next_state).position.x = 0;\n    (*next_state).velocity = reflect((*next_state).velocity, vec3<f32>(1, 0, 0));\n  }\n}";
 
 },{}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
 

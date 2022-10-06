@@ -1,5 +1,7 @@
 export interface RenderableInterface {
-  getCommands(renderPassDescriptor: GPURenderPassDescriptor): GPUCommandBuffer;
+  getCommands(
+    renderPassDescriptor: GPURenderPassDescriptor
+  ): GPUCommandBuffer | void;
 }
 
 class WebGPURenderer {
@@ -68,11 +70,12 @@ class WebGPURenderer {
       .getCurrentTexture()
       .createView();
 
-    this.device.queue.submit(
-      Array.from(this.renderables).map((renderable) =>
-        renderable.getCommands(this.renderPassDescriptor)
-      )
-    );
+    for (const renderable of this.renderables) {
+      const commands = renderable.getCommands(this.renderPassDescriptor);
+      if (commands) {
+        this.device.queue.submit([commands]);
+      }
+    }
   }
 }
 

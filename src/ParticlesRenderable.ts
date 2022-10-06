@@ -1,33 +1,16 @@
 import WebGPURenderer, { RenderableInterface } from "./WebGPURenderer";
-
 import drawShader from "bundle-text:./draw-shader.wgsl";
 
-const VERTEX_COUNT = 6;
-
-class ParticlesRenderable implements RenderableInterface {
-  private pipeline: GPURenderPipeline;
-  private simulationBindGroup?: GPUBindGroup;
-  private vertexBuffer: GPUBuffer;
-
-  constructor(
-    private device: GPUDevice,
-    private renderer: WebGPURenderer,
-    private particlesCount: number,
-    private uniformsBindGroupLayout: GPUBindGroupLayout,
-    private uniformsBindGroup: GPUBindGroup,
-    private simulationBindGroupLayout: GPUBindGroupLayout
-  ) {
-    this.createVertexBuffer();
-    this.createPipeline();
-  }
-
-  private createVertexBuffer() {
-    this.vertexBuffer = this.device.createBuffer({
-      size: VERTEX_COUNT * 2 * 2 * Float32Array.BYTES_PER_ELEMENT,
-      usage: GPUBufferUsage.VERTEX,
-      mappedAtCreation: true,
-    });
-    new Float32Array(this.vertexBuffer.getMappedRange()).set([
+type TGeometry = {
+  vertexCount: number;
+  bufferSize: number;
+  bufferData: number[];
+};
+const createQuad: () => TGeometry = () => {
+  return {
+    vertexCount: 6,
+    bufferSize: 6 * 2 * 2 * Float32Array.BYTES_PER_ELEMENT,
+    bufferData: [
       1,
       1,
       1,
@@ -53,7 +36,37 @@ class ParticlesRenderable implements RenderableInterface {
       1,
       0,
       0,
-    ]);
+    ],
+  };
+};
+
+class ParticlesRenderable implements RenderableInterface {
+  private pipeline: GPURenderPipeline;
+  private simulationBindGroup?: GPUBindGroup;
+  private vertexBuffer: GPUBuffer;
+  private vertexCount: number;
+
+  constructor(
+    private device: GPUDevice,
+    private renderer: WebGPURenderer,
+    private particlesCount: number,
+    private uniformsBindGroupLayout: GPUBindGroupLayout,
+    private uniformsBindGroup: GPUBindGroup,
+    private simulationBindGroupLayout: GPUBindGroupLayout
+  ) {
+    this.createVertexBuffer();
+    this.createPipeline();
+  }
+
+  private createVertexBuffer() {
+    const { vertexCount, bufferSize, bufferData } = createQuad();
+    this.vertexCount = vertexCount;
+    this.vertexBuffer = this.device.createBuffer({
+      size: bufferSize,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this.vertexBuffer.getMappedRange()).set(bufferData);
     this.vertexBuffer.unmap();
   }
 
@@ -133,7 +146,7 @@ class ParticlesRenderable implements RenderableInterface {
 
   public getCommands(
     renderPassDescriptor: GPURenderPassDescriptor
-  ): GPUCommandBuffer | void {
+  ): GPUCommandBuffer | undefined {
     if (!this.simulationSrcBindGroup) return;
 
     const commandEncoder = this.device.createCommandEncoder();
@@ -142,7 +155,7 @@ class ParticlesRenderable implements RenderableInterface {
     renderPass.setBindGroup(0, this.simulationSrcBindGroup);
     renderPass.setBindGroup(1, this.uniformsBindGroup);
     renderPass.setVertexBuffer(0, this.vertexBuffer);
-    renderPass.draw(VERTEX_COUNT, this.particlesCount, 0, 0);
+    renderPass.draw(this.vertexCount, this.particlesCount, 0, 0);
     renderPass.end();
 
     return commandEncoder.finish();
