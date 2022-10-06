@@ -520,14 +520,19 @@ function hmrAcceptRun(bundle, id) {
 
 },{}],"h7u1C":[function(require,module,exports) {
 var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+/// <reference types="@webgpu/types" />
 var _computeShaderWgsl = require("bundle-text:./compute-shader.wgsl");
 var _computeShaderWgslDefault = parcelHelpers.interopDefault(_computeShaderWgsl);
 var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
 var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
-var _img0481Png = require("./IMG_0481.png");
+var _img0481Png = require("./maps/IMG_0481.png");
 var _img0481PngDefault = parcelHelpers.interopDefault(_img0481Png);
-/// <reference types="@webgpu/types" />
-console.log("Hello world!");
+var _particlesRenderable = require("./ParticlesRenderable");
+var _particlesRenderableDefault = parcelHelpers.interopDefault(_particlesRenderable);
+var _textureLoader = require("./utils/TextureLoader");
+var _textureLoaderDefault = parcelHelpers.interopDefault(_textureLoader);
+var _webGPURenderer = require("./WebGPURenderer");
+var _webGPURendererDefault = parcelHelpers.interopDefault(_webGPURenderer);
 // TODO — Uniforms and texture on different bind group!
 // SECTION ON ALIGNMENT...
 // https://surma.dev/things/webgpu/
@@ -540,12 +545,12 @@ const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 const canvas = document.querySelector("canvas");
 canvas.width = window.innerWidth * window.devicePixelRatio;
 canvas.height = window.innerHeight * window.devicePixelRatio;
-let ctx;
-let presentationFormat;
+let renderer;
+let particlesRenderable;
 let device;
 let simulationBufferA, simulationBufferB, vertexDataBuffer;
 let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
-let uniformBuffer, uniformsBindGroupLayout, uniformsBindGroup, cubeTexture;
+let uniformBuffer, uniformsBindGroupLayout, uniformsBindGroup, texture;
 let shaderModule, computePipeline;
 let renderPipeline;
 let renderPassDesc;
@@ -576,18 +581,7 @@ const requestWebGPU = async ()=>{
         console.warn("Could not access Adapter");
         return;
     }
-    device = await adapter.requestDevice();
-    return device;
-};
-const setupCanvasCtx = ()=>{
-    ctx = canvas.getContext("webgpu");
-    presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-    ctx.configure({
-        device,
-        format: presentationFormat,
-        alphaMode: "opaque",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT
-    });
+    return await adapter.requestDevice();
 };
 const createBuffers = ()=>{
     simulationBufferA = device.createBuffer({
@@ -743,7 +737,7 @@ const createBindGroups = ()=>{
             },
             {
                 binding: 2,
-                resource: cubeTexture.createView()
+                resource: texture.createView()
             }, 
         ]
     });
@@ -819,7 +813,7 @@ const createRenderPipeline = async ()=>{
         entryPoint: "fragment_main",
         targets: [
             {
-                format: presentationFormat,
+                format: renderer.presentationFormat,
                 blend: {
                     color: {
                         operation: "add",
@@ -863,7 +857,7 @@ const createRenderPipeline = async ()=>{
     renderPassDesc = {
         colorAttachments: [
             {
-                view: ctx.getCurrentTexture().createView(),
+                view: renderer.ctx.getCurrentTexture().createView(),
                 clearValue: {
                     r: 0,
                     g: 0,
@@ -886,7 +880,7 @@ const createRenderPipeline = async ()=>{
 };
 const render = ()=>{
     performance.mark("render.start");
-    renderPassDesc.colorAttachments[0].view = ctx.getCurrentTexture().createView();
+    renderPassDesc.colorAttachments[0].view = renderer.ctx.getCurrentTexture().createView();
     const commandEncoder = device.createCommandEncoder();
     const renderPass = commandEncoder.beginRenderPass(renderPassDesc);
     renderPass.setPipeline(renderPipeline);
@@ -920,41 +914,18 @@ const animate = ()=>{
     performance.clearMeasures();
     requestAnimationFrame(animate);
 };
-const loadTexture = async ()=>{
-    const img = document.createElement("img");
-    img.src = _img0481PngDefault.default;
-    await img.decode();
-    const imageBitmap = await createImageBitmap(img);
-    cubeTexture = device.createTexture({
-        size: [
-            imageBitmap.width,
-            imageBitmap.height,
-            1
-        ],
-        format: "rgba8unorm",
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-    });
-    device.queue.copyExternalImageToTexture({
-        source: imageBitmap
-    }, {
-        texture: cubeTexture
-    }, [
-        imageBitmap.width,
-        imageBitmap.height
-    ]);
-};
 (async ()=>{
     if (!navigator.gpu) {
         alert("WebGPU not available! — Use Chrome Canary and enable-unsafe-gpu in flags.");
         return;
     }
-    // setupDOMRenderer();
-    await requestWebGPU();
-    await loadTexture();
-    setupCanvasCtx();
+    device = await requestWebGPU();
+    renderer = new _webGPURendererDefault.default(device, canvas);
+    texture = await new _textureLoaderDefault.default(device).loadTextureFromImageSrc(_img0481PngDefault.default);
     createBuffers();
     createBindGroups();
     createComputePipeline();
+    particlesRenderable = new _particlesRenderableDefault.default(device, renderer, ENTITIES_COUNT, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout);
     await createRenderPipeline();
     requestAnimationFrame(animate);
     window.addEventListener("mousedown", ({ clientX , clientY  })=>{
@@ -976,7 +947,7 @@ const loadTexture = async ()=>{
     });
 })();
 
-},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","bundle-text:./draw-shader.wgsl":"l4wa9","./IMG_0481.png":"gkfcK"}],"gkKU3":[function(require,module,exports) {
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3","bundle-text:./compute-shader.wgsl":"4NDR6","bundle-text:./draw-shader.wgsl":"l4wa9","./maps/IMG_0481.png":"lQSka","./utils/TextureLoader":"blQVX","./WebGPURenderer":"4h10T","./ParticlesRenderable":"bQ6X1"}],"gkKU3":[function(require,module,exports) {
 exports.interopDefault = function(a) {
     return a && a.__esModule ? a : {
         default: a
@@ -1012,8 +983,8 @@ module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\
 },{}],"l4wa9":[function(require,module,exports) {
 module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(1) @binding(1) var mySampler: sampler;\n@group(1) @binding(2) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
 
-},{}],"gkfcK":[function(require,module,exports) {
-module.exports = require('./helpers/bundle-url').getBundleURL('7UhFu') + "IMG_0481.12df7d47.png" + "?" + Date.now();
+},{}],"lQSka":[function(require,module,exports) {
+module.exports = require('./helpers/bundle-url').getBundleURL('7UhFu') + "IMG_0481.a316e6c7.png" + "?" + Date.now();
 
 },{"./helpers/bundle-url":"lgJ39"}],"lgJ39":[function(require,module,exports) {
 "use strict";
@@ -1049,6 +1020,246 @@ function getOrigin(url) {
 exports.getBundleURL = getBundleURLCached;
 exports.getBaseURL = getBaseURL;
 exports.getOrigin = getOrigin;
+
+},{}],"blQVX":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+class TextureLoader {
+    constructor(device){
+        this.device = device;
+    }
+    createTextureFromImageBitmapOrCanvas(src) {
+        const texture = this.device.createTexture({
+            size: [
+                src.width,
+                src.height,
+                1
+            ],
+            format: "rgba8unorm",
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        this.device.queue.copyExternalImageToTexture({
+            source: src
+        }, {
+            texture: texture
+        }, [
+            src.width,
+            src.height
+        ]);
+        return texture;
+    }
+    async loadTextureFromImageSrc(src) {
+        const response = await fetch(src);
+        const blob = await response.blob();
+        const imageBitmap = await createImageBitmap(blob);
+        return this.createTextureFromImageBitmapOrCanvas(imageBitmap);
+    }
+}
+exports.default = TextureLoader;
+
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"4h10T":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+class WebGPURenderer {
+    constructor(device, canvas, options = {
+    }){
+        this.device = device;
+        this.canvas = canvas;
+        this.renderables = new Set();
+        this.depthFormat = "depth24plus-stencil8";
+        this.ctx = this.canvas.getContext("webgpu");
+        this.presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+        this.ctx.configure({
+            device: this.device,
+            format: this.presentationFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+            alphaMode: "opaque",
+            ...options
+        });
+        const depthTexture = device.createTexture({
+            size: {
+                width: canvas.width,
+                height: canvas.height,
+                depthOrArrayLayers: 1
+            },
+            format: this.depthFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+        this.renderPassDescriptor = {
+            colorAttachments: [
+                {
+                    view: this.ctx.getCurrentTexture().createView(),
+                    clearValue: {
+                        r: 0,
+                        g: 0,
+                        b: 0,
+                        a: 1
+                    },
+                    loadOp: "clear",
+                    storeOp: "store"
+                }, 
+            ],
+            depthStencilAttachment: {
+                view: depthTexture.createView(),
+                depthClearValue: 1,
+                depthLoadOp: "clear",
+                depthStoreOp: "store",
+                stencilLoadOp: "clear",
+                stencilStoreOp: "store"
+            }
+        };
+    }
+    addRenderable(renderable) {
+        this.renderables.add(renderable);
+    }
+    removeRenderable(renderable) {
+        this.renderables.delete(renderable);
+    }
+    render() {
+        this.renderPassDescriptor.colorAttachments[0].view = this.ctx.getCurrentTexture().createView();
+        this.device.queue.submit(Array.from(this.renderables).map((renderable)=>renderable.getCommands(this.renderPassDescriptor)
+        ));
+    }
+}
+exports.default = WebGPURenderer;
+
+},{"@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"bQ6X1":[function(require,module,exports) {
+var parcelHelpers = require("@parcel/transformer-js/src/esmodule-helpers.js");
+parcelHelpers.defineInteropFlag(exports);
+var _drawShaderWgsl = require("bundle-text:./draw-shader.wgsl");
+var _drawShaderWgslDefault = parcelHelpers.interopDefault(_drawShaderWgsl);
+const VERTEX_COUNT = 6;
+class ParticlesRenderable {
+    constructor(device, renderer, particlesCount, uniformsBindGroupLayout, uniformsBindGroup, simulationBindGroupLayout){
+        this.device = device;
+        this.renderer = renderer;
+        this.particlesCount = particlesCount;
+        this.uniformsBindGroupLayout = uniformsBindGroupLayout;
+        this.uniformsBindGroup = uniformsBindGroup;
+        this.simulationBindGroupLayout = simulationBindGroupLayout;
+        this.createVertexBuffer();
+        this.createPipeline();
+    }
+    createVertexBuffer() {
+        this.vertexBuffer = this.device.createBuffer({
+            size: VERTEX_COUNT * 4 * Float32Array.BYTES_PER_ELEMENT,
+            usage: GPUBufferUsage.VERTEX,
+            mappedAtCreation: true
+        });
+        new Float32Array(this.vertexBuffer.getMappedRange()).set([
+            1,
+            1,
+            1,
+            0,
+            1,
+            -1,
+            1,
+            1,
+            -1,
+            -1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0,
+            -1,
+            -1,
+            0,
+            1,
+            -1,
+            1,
+            0,
+            0, 
+        ]);
+        this.vertexBuffer.unmap();
+    }
+    createPipeline() {
+        const shaderModule = this.device.createShaderModule({
+            code: _drawShaderWgslDefault.default
+        });
+        const vertexState = {
+            module: shaderModule,
+            entryPoint: "vertex_main",
+            buffers: [
+                {
+                    arrayStride: 16,
+                    attributes: [
+                        {
+                            format: "float32x2",
+                            offset: 0,
+                            shaderLocation: 0
+                        },
+                        {
+                            format: "float32x2",
+                            offset: 8,
+                            shaderLocation: 1
+                        }, 
+                    ]
+                }, 
+            ]
+        };
+        const fragmentState = {
+            module: shaderModule,
+            entryPoint: "fragment_main",
+            targets: [
+                {
+                    format: this.renderer.presentationFormat,
+                    blend: {
+                        color: {
+                            operation: "add",
+                            srcFactor: "one",
+                            dstFactor: "one"
+                        },
+                        alpha: {
+                            operation: "add",
+                            srcFactor: "one",
+                            dstFactor: "one"
+                        }
+                    }
+                }, 
+            ]
+        };
+        const bindGroupLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [
+                this.simulationBindGroupLayout,
+                this.uniformsBindGroupLayout, 
+            ]
+        });
+        this.pipeline = this.device.createRenderPipeline({
+            layout: bindGroupLayout,
+            vertex: vertexState,
+            fragment: fragmentState,
+            depthStencil: {
+                format: this.renderer.depthFormat,
+                depthWriteEnabled: true,
+                depthCompare: "less"
+            }
+        });
+    }
+    set simulationSrcBindGroup(group) {
+        this.simulationBindGroup = group;
+    }
+    get simulationSrcBindGroup() {
+        return this.simulationBindGroup;
+    }
+    getCommands(renderPassDescriptor) {
+        if (!this.simulationSrcBindGroup) return;
+        const commandEncoder = this.device.createCommandEncoder();
+        const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
+        renderPass.setPipeline(this.pipeline);
+        renderPass.setBindGroup(0, this.simulationSrcBindGroup);
+        renderPass.setBindGroup(1, this.uniformsBindGroup);
+        renderPass.setVertexBuffer(0, this.vertexBuffer);
+        renderPass.draw(VERTEX_COUNT, this.particlesCount, 0, 0);
+        renderPass.end();
+        return commandEncoder.finish();
+    }
+}
+exports.default = ParticlesRenderable;
+
+},{"bundle-text:./draw-shader.wgsl":"6HAGK","@parcel/transformer-js/src/esmodule-helpers.js":"gkKU3"}],"6HAGK":[function(require,module,exports) {
+module.exports = "struct Body {\n  position: vec3<f32>,\n  velocity: vec3<f32>,\n  texture_uv: vec2<f32>,\n  mass: f32,\n}\n\nstruct Uniforms {\n  u_resolution : vec2<f32>,\n  u_mouse : vec2<f32>,\n}\n\n@group(0) @binding(0) var<storage, read> input : array<Body>;\n@group(1) @binding(0) var<uniform> uniforms : Uniforms;\n@group(1) @binding(1) var mySampler: sampler;\n@group(1) @binding(2) var myTexture: texture_2d<f32>;\n\nstruct VertexInput {\n  @location(0) position : vec2<f32>,\n  @location(1) texture_uv : vec2<f32>,\n}\n\nstruct VertexOutput {\n  @builtin(position) position : vec4<f32>,\n  @location(0) texture_uv : vec2<f32>,\n}\n\nfn ball_sdf(position : vec2<f32>, radius : f32, coords : vec2<f32>) -> f32 {\n  var dst : f32 = radius / 2.0 / length(coords - position);\n  return dst;\n}\n\nfn screen_space_to_clip_space(screen_space: vec2<f32>) -> vec2<f32> {\n  var clip_space = ((screen_space / uniforms.u_resolution) * 2.0) - 1.0;\n  clip_space.y = clip_space.y * -1;\n\n  return clip_space;\n}\n\nfn quantize(value: f32, q_step: f32) -> f32 {\n  return round(value / q_step) * q_step;\n}\n\n@vertex\nfn vertex_main(@builtin(instance_index) instance_index : u32, vert : VertexInput) -> VertexOutput {\n  var output : VertexOutput;\n  var radius : f32 = 0.5;\n  var entity = input[instance_index];\n\n  var screen_space_coords: vec2<f32> = vert.position.xy * radius + entity.position.xy;\n  output.position = vec4<f32>(screen_space_to_clip_space(screen_space_coords), 0, 1.0);\n  output.texture_uv = entity.texture_uv;\n  return output;\n}\n\n@fragment\nfn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {\n\n  var color = textureSample(myTexture, mySampler, in.texture_uv);\n  return vec4<f32>(color.rgb, 1.0);\n}";
 
 },{}]},["8wcER","h7u1C"], "h7u1C", "parcelRequire94c2")
 

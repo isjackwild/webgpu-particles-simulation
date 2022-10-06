@@ -1,10 +1,11 @@
 /// <reference types="@webgpu/types" />
 
-console.log("Hello world!");
 import computeShader from "bundle-text:./compute-shader.wgsl";
 import drawShader from "bundle-text:./draw-shader.wgsl";
-import { vec3 } from "gl-matrix";
-import imgSrc from "./IMG_0481.png";
+import imgSrc from "./maps/IMG_0481.png";
+import ParticlesRenderable from "./ParticlesRenderable";
+import TextureLoader from "./utils/TextureLoader";
+import WebGPURenderer from "./WebGPURenderer";
 
 // TODO — Uniforms and texture on different bind group!
 
@@ -21,8 +22,9 @@ const BUFFER_SIZE = STRIDE * Float32Array.BYTES_PER_ELEMENT * ENTITIES_COUNT;
 const canvas = document.querySelector("canvas") as HTMLCanvasElement;
 canvas.width = window.innerWidth * window.devicePixelRatio;
 canvas.height = window.innerHeight * window.devicePixelRatio;
-let ctx: GPUCanvasContext;
-let presentationFormat;
+
+let renderer: WebGPURenderer;
+let particlesRenderable: ParticlesRenderable;
 
 let device: GPUDevice;
 let simulationBufferA, simulationBufferB, vertexDataBuffer;
@@ -31,7 +33,7 @@ let simulationBindGroupLayout, simulationBindGroupA, simulationBindGroupB;
 let uniformBuffer,
   uniformsBindGroupLayout,
   uniformsBindGroup,
-  cubeTexture: GPUTexture;
+  texture: GPUTexture;
 
 let shaderModule, computePipeline;
 let renderPipeline;
@@ -68,20 +70,7 @@ const requestWebGPU = async () => {
     console.warn("Could not access Adapter");
     return;
   }
-  device = await adapter.requestDevice();
-  return device;
-};
-
-const setupCanvasCtx = () => {
-  ctx = canvas.getContext("webgpu") as GPUCanvasContext;
-  presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-
-  ctx.configure({
-    device,
-    format: presentationFormat,
-    alphaMode: "opaque",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
+  return await adapter.requestDevice();
 };
 
 const createBuffers = () => {
@@ -215,7 +204,7 @@ const createBindGroups = () => {
       },
       {
         binding: 2,
-        resource: cubeTexture.createView(),
+        resource: texture.createView(),
       },
     ],
   });
@@ -299,7 +288,7 @@ const createRenderPipeline = async () => {
     entryPoint: "fragment_main",
     targets: [
       {
-        format: presentationFormat,
+        format: renderer.presentationFormat,
         blend: {
           color: {
             operation: "add",
@@ -343,7 +332,7 @@ const createRenderPipeline = async () => {
   renderPassDesc = {
     colorAttachments: [
       {
-        view: ctx.getCurrentTexture().createView(), // Assigned later
+        view: renderer.ctx.getCurrentTexture().createView(), // Assigned later
         clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
         loadOp: "clear",
         storeOp: "store",
@@ -362,7 +351,7 @@ const createRenderPipeline = async () => {
 
 const render = () => {
   performance.mark("render.start");
-  renderPassDesc.colorAttachments[0].view = ctx
+  renderPassDesc.colorAttachments[0].view = renderer.ctx
     .getCurrentTexture()
     .createView();
 
@@ -405,27 +394,6 @@ const animate = () => {
   requestAnimationFrame(animate);
 };
 
-const loadTexture = async () => {
-  const img = document.createElement("img");
-  img.src = imgSrc;
-  await img.decode();
-  const imageBitmap = await createImageBitmap(img);
-
-  cubeTexture = device.createTexture({
-    size: [imageBitmap.width, imageBitmap.height, 1],
-    format: "rgba8unorm",
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-  device.queue.copyExternalImageToTexture(
-    { source: imageBitmap },
-    { texture: cubeTexture },
-    [imageBitmap.width, imageBitmap.height]
-  );
-};
-
 (async () => {
   if (!navigator.gpu) {
     alert(
@@ -434,13 +402,20 @@ const loadTexture = async () => {
     return;
   }
 
-  // setupDOMRenderer();
-  await requestWebGPU();
-  await loadTexture();
-  setupCanvasCtx();
+  device = (await requestWebGPU()) as GPUDevice;
+  renderer = new WebGPURenderer(device, canvas);
+  texture = await new TextureLoader(device).loadTextureFromImageSrc(imgSrc);
   createBuffers();
   createBindGroups();
   createComputePipeline();
+  particlesRenderable = new ParticlesRenderable(
+    device,
+    renderer,
+    ENTITIES_COUNT,
+    uniformsBindGroupLayout,
+    uniformsBindGroup,
+    simulationBindGroupLayout
+  );
   await createRenderPipeline();
 
   requestAnimationFrame(animate);
