@@ -1,6 +1,4 @@
-/// <reference types="@webgpu/types" />
-
-import imgSrc from "./maps/IMG_0481.png";
+import imgSrc from "./maps/George-McNeil.png";
 import ParticlesRenderable from "./ParticlesRenderable";
 import SimulationComputable from "./SimulationComputable";
 import { requestWebGPU } from "./utils";
